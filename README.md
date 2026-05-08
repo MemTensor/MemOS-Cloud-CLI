@@ -21,6 +21,7 @@ MemOS-CLI/
 │   └── commands/            # CLI commands
 │       ├── init.py          # memos init
 │       ├── config_cmd.py    # memos config (show/get/set)
+│       ├── kb.py            # kb create / file add
 │       └── memory.py        # add/search/list/chat/get/delete
 ├── skills/
 │   ├── memos-shared/        # Shared config and runtime rules
@@ -85,6 +86,18 @@ memos get mem_123456
 
 ```bash
 memos delete mem_123456
+```
+
+### 8. Create Knowledge Base
+
+```bash
+memos kb create "Project Docs" --description "Internal knowledge base"
+```
+
+### 9. Add Documents to a Knowledge Base
+
+```bash
+memos kb file add kb_123 https://example.com/doc-a.pdf https://example.com/doc-b.pdf
 ```
 
 ## JSON Output Mode

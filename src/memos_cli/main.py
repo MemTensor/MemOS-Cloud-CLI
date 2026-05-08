@@ -7,6 +7,7 @@ from rich.console import Console
 from memos_cli import __version__
 from memos_cli.commands.init import init_cmd
 from memos_cli.commands.config_cmd import config_app
+from memos_cli.commands.kb import kb_app
 from memos_cli.commands.memory import add, search, list, chat, get, delete
 from memos_cli.state import set_runtime_options
 
@@ -76,6 +77,7 @@ def _fire_telemetry(command_name: str, extra: dict | None = None):
 # Register subcommands
 app.command("init", rich_help_panel="Setup")(init_cmd)
 app.add_typer(config_app, rich_help_panel="Configuration")
+app.add_typer(kb_app, rich_help_panel="Advanced")
 
 # Memory commands (P0)
 app.command(rich_help_panel="Memory Operations")(add)
@@ -86,7 +88,6 @@ app.command(rich_help_panel="Memory Operations")(delete)
 
 # Advanced commands (P1)
 app.command(rich_help_panel="Advanced")(chat)
-# app.command(rich_help_panel="Advanced")(kb_cmd)
 
 
 if __name__ == "__main__":

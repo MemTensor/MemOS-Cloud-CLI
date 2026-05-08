@@ -95,6 +95,33 @@ class MemoryApiListTests(unittest.TestCase):
         self.assertFalse(kwargs["json_body"]["moscube"])
         self.assertEqual(result["answer"], "hello from product route")
 
+    def test_create_knowledgebase_uses_official_route(self) -> None:
+        transport = StubTransport()
+        api = MemoryAPI(transport)
+
+        api.create_knowledgebase("Project Docs", description="Internal docs")
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/create/knowledgebase")
+        self.assertEqual(kwargs["json_body"]["knowledgebase_name"], "Project Docs")
+        self.assertEqual(kwargs["json_body"]["knowledgebase_description"], "Internal docs")
+
+    def test_add_knowledgebase_files_uses_official_route(self) -> None:
+        transport = StubTransport()
+        api = MemoryAPI(transport)
+
+        api.add_knowledgebase_files(
+            "kb-123",
+            [{"content": "https://example.com/a.pdf"}],
+        )
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/add/knowledgebase-file")
+        self.assertEqual(kwargs["json_body"]["knowledgebase_id"], "kb-123")
+        self.assertEqual(kwargs["json_body"]["file"], [{"content": "https://example.com/a.pdf"}])
+
 
 if __name__ == "__main__":
     unittest.main()

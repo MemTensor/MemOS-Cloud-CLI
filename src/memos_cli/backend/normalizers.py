@@ -35,14 +35,37 @@ def normalize_chat_response(data: dict | str, *, original_query: str) -> dict:
     return normalized
 
 
+def normalize_kb_create_response(data: dict, *, name: str, description: str | None) -> dict:
+    """Normalize knowledge base creation response."""
+    normalized = dict(data)
+    kb_data = data.get("data", {}) if isinstance(data.get("data"), dict) else {}
+    normalized["id"] = kb_data.get("id") or data.get("id") or ""
+    normalized.setdefault("knowledgebase_name", name)
+    if description is not None:
+        normalized.setdefault("knowledgebase_description", description)
+    return normalized
+
+
+def normalize_kb_file_add_response(data: dict, *, knowledgebase_id: str) -> dict:
+    """Normalize knowledge base file add response."""
+    normalized = dict(data)
+    normalized.setdefault("knowledgebase_id", knowledgebase_id)
+    files = data.get("data", [])
+    if isinstance(files, list):
+        normalized["files"] = files
+    else:
+        normalized["files"] = []
+    return normalized
+
+
 def normalize_search_response(data: dict) -> list[dict]:
     """Normalize search response to a flat memory list."""
     if isinstance(data.get("results"), list):
-        return [normalize_memory_item(item) for item in data["results"]]
+        return _sort_by_relativity_desc([normalize_memory_item(item) for item in data["results"]])
 
     raw_data = data.get("data", data)
     if isinstance(raw_data, list):
-        return [normalize_memory_item(item) for item in raw_data]
+        return _sort_by_relativity_desc([normalize_memory_item(item) for item in raw_data])
 
     memory_list = raw_data.get("memory_detail_list", []) if isinstance(raw_data, dict) else []
     preference_list = (
@@ -53,7 +76,7 @@ def normalize_search_response(data: dict) -> list[dict]:
     results = [normalize_memory_item(item) for item in memory_list]
     results.extend(normalize_preference_item(item) for item in preference_list)
     results.extend(normalize_memory_item(item) for item in tool_list)
-    return results
+    return _sort_by_relativity_desc(results)
 
 
 def normalize_single_memory_response(data: dict, memory_id: str) -> dict | None:
@@ -107,6 +130,12 @@ def normalize_memory_item(item: dict, fallback_text: str | None = None) -> dict:
     normalized["memory"] = memory_text
     if "memory_id" in normalized and "id" not in normalized:
         normalized["id"] = normalized["memory_id"]
+    if normalized.get("created_at") is None and normalized.get("create_time") is not None:
+        normalized["created_at"] = normalized["create_time"]
+    if normalized.get("updated_at") is None and normalized.get("update_time") is not None:
+        normalized["updated_at"] = normalized["update_time"]
+    if normalized.get("score") is None and normalized.get("relativity") is not None:
+        normalized["score"] = normalized["relativity"]
     return normalized
 
 
@@ -117,6 +146,12 @@ def normalize_preference_item(item: dict) -> dict:
     if "preference_id" in item and "id" not in normalized:
         normalized["id"] = item["preference_id"]
     normalized.setdefault("memory_type", item.get("preference_type", "preference"))
+    if normalized.get("created_at") is None and normalized.get("create_time") is not None:
+        normalized["created_at"] = normalized["create_time"]
+    if normalized.get("updated_at") is None and normalized.get("update_time") is not None:
+        normalized["updated_at"] = normalized["update_time"]
+    if normalized.get("score") is None and normalized.get("relativity") is not None:
+        normalized["score"] = normalized["relativity"]
     return normalized
 
 
@@ -146,3 +181,16 @@ def _extract_choice_content(choices) -> str:
     if isinstance(first.get("text"), str):
         return first["text"]
     return ""
+
+
+def _sort_by_relativity_desc(items: list[dict]) -> list[dict]:
+    def relativity_value(item: dict) -> float:
+        value = item.get("relativity")
+        if value is None:
+            value = item.get("score")
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float("-inf")
+
+    return sorted(items, key=relativity_value, reverse=True)

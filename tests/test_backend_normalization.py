@@ -5,6 +5,8 @@ import unittest
 from memos_cli.backend.normalizers import (
     normalize_add_response,
     normalize_chat_response,
+    normalize_kb_create_response,
+    normalize_kb_file_add_response,
     normalize_search_response,
 )
 
@@ -18,9 +20,11 @@ class BackendNormalizationTests(unittest.TestCase):
                 ],
                 "preference_detail_list": [
                     {
-                        "preference_id": "pref-1",
+                        "id": "pref-1",
                         "preference": "Prefers dark mode",
                         "preference_type": "explicit_preference",
+                        "create_time": 1778232916444,
+                        "relativity": 0.6278583,
                     }
                 ],
             }
@@ -33,6 +37,8 @@ class BackendNormalizationTests(unittest.TestCase):
         self.assertEqual(result[0]["memory"], "User likes coffee")
         self.assertEqual(result[1]["id"], "pref-1")
         self.assertEqual(result[1]["memory"], "Prefers dark mode")
+        self.assertEqual(result[1]["created_at"], 1778232916444)
+        self.assertEqual(result[1]["score"], 0.6278583)
 
     def test_normalize_add_response_wraps_single_data_item(self) -> None:
         payload = {
@@ -58,6 +64,38 @@ class BackendNormalizationTests(unittest.TestCase):
 
         self.assertEqual(result["answer"], "Hello from MemOS")
         self.assertEqual(result["query"], "Say hi")
+
+    def test_normalize_kb_create_response_extracts_id(self) -> None:
+        payload = {
+            "code": 200,
+            "message": "Operation successful",
+            "data": {
+                "id": "kb-123",
+            },
+        }
+
+        result = normalize_kb_create_response(
+            payload,
+            name="Project Docs",
+            description="Internal docs",
+        )
+
+        self.assertEqual(result["id"], "kb-123")
+        self.assertEqual(result["knowledgebase_name"], "Project Docs")
+
+    def test_normalize_kb_file_add_response_extracts_files(self) -> None:
+        payload = {
+            "code": 200,
+            "data": [
+                {"content": "https://example.com/a.pdf"},
+                {"content": "https://example.com/b.pdf"},
+            ],
+        }
+
+        result = normalize_kb_file_add_response(payload, knowledgebase_id="kb-123")
+
+        self.assertEqual(result["knowledgebase_id"], "kb-123")
+        self.assertEqual(len(result["files"]), 2)
 
 
 if __name__ == "__main__":

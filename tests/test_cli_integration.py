@@ -59,6 +59,7 @@ class CLIHelpTests(unittest.TestCase):
         self.assertIn("list", result.stdout)
         self.assertIn("search", result.stdout)
         self.assertIn("chat", result.stdout)
+        self.assertIn("kb", result.stdout)
 
     def test_init_help(self) -> None:
         result = run_cli(["init", "--help"])
@@ -97,6 +98,21 @@ class CLIHelpTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0)
         self.assertIn("show", result.stdout)
         self.assertIn("get", result.stdout)
+
+    def test_kb_help(self) -> None:
+        result = run_cli(["kb", "--help"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("create", result.stdout)
+
+    def test_kb_create_help(self) -> None:
+        result = run_cli(["kb", "create", "--help"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("--description", result.stdout)
+
+    def test_kb_file_add_help(self) -> None:
+        result = run_cli(["kb", "file", "add", "--help"])
+        self.assertEqual(result.returncode, 0)
+        self.assertIn("Knowledge base ID", result.stdout)
 
 
 class CLIIsolatedTests(unittest.TestCase):
@@ -182,6 +198,38 @@ class CLIIsolatedTests(unittest.TestCase):
             self.assertNotEqual(result.returncode, 0)
             combined = result.stdout + result.stderr
             self.assertNotIn("No API key configured", combined)
+
+    def test_kb_create_with_env_key_reaches_backend_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir:
+            result = run_cli(
+                ["kb", "create", "Project Docs"],
+                home_dir=home_dir,
+                env_override={"MEMOS_API_KEY": "test-key"},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("No API key configured", combined)
+
+    def test_kb_file_add_with_env_key_reaches_backend_layer(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir:
+            result = run_cli(
+                ["kb", "file", "add", "kb-123", "https://example.com/a.pdf"],
+                home_dir=home_dir,
+                env_override={"MEMOS_API_KEY": "test-key"},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            combined = result.stdout + result.stderr
+            self.assertNotIn("No API key configured", combined)
+
+    def test_kb_file_add_rejects_unsupported_file_type_early(self) -> None:
+        with tempfile.TemporaryDirectory() as home_dir:
+            result = run_cli(
+                ["kb", "file", "add", "kb-123", "https://example.com/page"],
+                home_dir=home_dir,
+                env_override={"MEMOS_API_KEY": "test-key"},
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Unsupported file type for knowledge base upload", result.stdout + result.stderr)
 
     def test_env_user_id_is_used_in_config_show(self) -> None:
         with tempfile.TemporaryDirectory() as home_dir:

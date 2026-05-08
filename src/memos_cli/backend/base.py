@@ -32,6 +32,16 @@ class BackendBase(ABC):
     def chat(self, query: str, **kwargs) -> dict[str, Any]:
         """Chat with MemOS."""
         pass
+
+    @abstractmethod
+    def create_knowledgebase(self, name: str, description: str | None = None, **kwargs) -> dict[str, Any]:
+        """Create a knowledge base."""
+        pass
+
+    @abstractmethod
+    def add_knowledgebase_files(self, knowledgebase_id: str, files: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
+        """Add files to a knowledge base."""
+        pass
     
     @abstractmethod
     def get_memory(self, memory_id: str) -> dict[str, Any]:

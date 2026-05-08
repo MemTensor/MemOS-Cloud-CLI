@@ -8,6 +8,8 @@ from memos_cli.backend.normalizers import (
     normalize_add_response,
     normalize_chat_response,
     normalize_delete_response,
+    normalize_kb_create_response,
+    normalize_kb_file_add_response,
     normalize_search_response,
     normalize_single_memory_response,
 )
@@ -243,6 +245,45 @@ class MemoryAPI:
         if last_error is not None:
             raise last_error
         raise APIError("Failed to chat with MemOS")
+
+    def create_knowledgebase(
+        self,
+        name: str,
+        *,
+        description: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Create a knowledge base."""
+        payload: dict[str, Any] = {
+            "knowledgebase_name": name,
+        }
+        if description is not None:
+            payload["knowledgebase_description"] = description
+
+        data = self.transport.request_json(
+            "POST",
+            "/create/knowledgebase",
+            json_body=payload,
+        )
+        return normalize_kb_create_response(data, name=name, description=description)
+
+    def add_knowledgebase_files(
+        self,
+        knowledgebase_id: str,
+        files: list[dict[str, Any]],
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Add files to a knowledge base."""
+        payload = {
+            "knowledgebase_id": knowledgebase_id,
+            "file": files,
+        }
+        data = self.transport.request_json(
+            "POST",
+            "/add/knowledgebase-file",
+            json_body=payload,
+        )
+        return normalize_kb_file_add_response(data, knowledgebase_id=knowledgebase_id)
 
     @staticmethod
     def _find_memory_by_id(memories: list[dict[str, Any]], memory_id: str) -> dict[str, Any] | None:
