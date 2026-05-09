@@ -13,9 +13,11 @@ from memos_cli.backend.memos_api import APIError, AuthError, get_backend
 from memos_cli.config import DEFAULT_CONVERSATION_ID, DEFAULT_USER_ID, load_config
 from memos_cli.output import (
     format_add_result,
+    format_extract_result,
     format_agent_envelope,
     format_chat_result,
     format_memories_text,
+    format_rerank_result,
     format_single_memory,
 )
 from memos_cli.state import apply_runtime_overrides, is_agent_mode
@@ -84,6 +86,31 @@ def resolve_chat_query(query: str | None, query_option: str | None) -> str:
     return final_query
 
 
+def resolve_rerank_documents(
+    documents: list[str] | None,
+    document_options: list[str] | None,
+    documents_json: str | None,
+) -> list[str]:
+    """Resolve rerank documents from args, repeated options, JSON, or stdin."""
+    resolved: list[str] = []
+    if documents:
+        resolved.extend(item for item in documents if item)
+    if document_options:
+        resolved.extend(item for item in document_options if item)
+    parsed_json = parse_json_option(documents_json, option_name="--documents-json")
+    if parsed_json is not None:
+        if not isinstance(parsed_json, list) or not all(isinstance(item, str) for item in parsed_json):
+            console.print("[red]Error:[/] --documents-json must be a JSON array of strings")
+            raise typer.Exit(1)
+        resolved.extend(item for item in parsed_json if item)
+    if not resolved and not sys.stdin.isatty():
+        resolved.extend(line.strip() for line in sys.stdin.read().splitlines() if line.strip())
+    if not resolved:
+        console.print("[red]Error:[/] No documents provided")
+        raise typer.Exit(1)
+    return resolved
+
+
 def parse_json_option(raw: str | None, *, option_name: str) -> Any | None:
     """Parse a JSON-encoded CLI option when provided."""
     if raw is None:
@@ -147,6 +174,60 @@ def cmd_add(
     format_add_result(console, result)
 
 
+def cmd_extract(
+    text: str | None,
+    *,
+    message: str | None,
+    extraction_types: list[str],
+    user_id: str | None,
+    agent_id: str | None,
+    app_id: str | None,
+    run_id: str | None,
+    conversation_id: str | None,
+    json_output: bool,
+) -> None:
+    """Execute extract."""
+    start_time = time.time()
+    content = read_add_content(text, message)
+
+    try:
+        config, backend = _load_backend()
+        scope = resolve_scope(
+            config=config,
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+        )
+        final_conversation_id = (
+            conversation_id
+            or config.defaults.conversation_id
+            or config.defaults.run_id
+            or DEFAULT_CONVERSATION_ID
+        )
+        result = backend.extract_memory(
+            content,
+            **scope,
+            conversation_id=final_conversation_id,
+            extraction_types=extraction_types,
+        )
+    except Exception as exc:
+        _handle_error(exc)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    if json_output or is_agent_mode():
+        format_agent_envelope(
+            console,
+            command="extract",
+            data=result,
+            duration_ms=duration_ms,
+            scope={**scope, "conversation_id": final_conversation_id},
+            count=len(result.get("results", [])),
+        )
+        return
+    format_extract_result(console, result)
+
+
 def cmd_search(
     query: str | None,
     *,
@@ -195,6 +276,46 @@ def cmd_search(
     format_memories_text(console, memories, title="memories")
 
 
+def cmd_rerank(
+    query: str | None,
+    *,
+    query_option: str | None,
+    documents: list[str] | None,
+    document_options: list[str] | None,
+    documents_json: str | None,
+    model: str | None,
+    top_n: int | None,
+    json_output: bool,
+) -> None:
+    """Execute rerank."""
+    start_time = time.time()
+    final_query = resolve_search_query(query, query_option)
+    final_documents = resolve_rerank_documents(documents, document_options, documents_json)
+
+    try:
+        _, backend = _load_backend()
+        result = backend.rerank_documents(
+            final_query,
+            final_documents,
+            model=model,
+            top_n=top_n,
+        )
+    except Exception as exc:
+        _handle_error(exc)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    if json_output or is_agent_mode():
+        format_agent_envelope(
+            console,
+            command="rerank",
+            data=result,
+            duration_ms=duration_ms,
+            count=len(result.get("results", [])),
+        )
+        return
+    format_rerank_result(console, result)
+
+
 def cmd_list(
     *,
     user_id: str | None,
@@ -222,7 +343,7 @@ def cmd_list(
             scope={"user_id": final_user_id},
         )
         return
-    format_memories_text(console, memories, title="memories")
+    format_memories_text(console, memories, title="memories", show_relativity=False)
 
 
 def cmd_chat(

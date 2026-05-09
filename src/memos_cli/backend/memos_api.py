@@ -28,6 +28,14 @@ class MemOSBackend(BackendBase):
         """Add a new memory."""
         return self.memory_api.add_memory(text, **kwargs)
 
+    def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
+        """Extract memory candidates without storing them."""
+        return self.memory_api.extract_memory(text, **kwargs)
+
+    def rerank_documents(self, query: str, documents: list[str], **kwargs: Any) -> dict[str, Any]:
+        """Rerank candidate documents for a query."""
+        return self.memory_api.rerank_documents(query, documents, **kwargs)
+
     def search_memories(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         """Search memories."""
         return self.memory_api.search_memories(query, **kwargs)
@@ -44,9 +52,25 @@ class MemOSBackend(BackendBase):
         """Create a knowledge base."""
         return self.memory_api.create_knowledgebase(name, description=description, **kwargs)
 
+    def list_knowledgebases(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """List knowledge bases."""
+        return self.memory_api.list_knowledgebases(**kwargs)
+
     def add_knowledgebase_files(self, knowledgebase_id: str, files: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
         """Add files to a knowledge base."""
         return self.memory_api.add_knowledgebase_files(knowledgebase_id, files, **kwargs)
+
+    def get_knowledgebase_file(self, file_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Get a knowledge base file/document."""
+        return self.memory_api.get_knowledgebase_file(file_id, **kwargs)
+
+    def delete_knowledgebase_files(self, file_ids: list[str], knowledgebase_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
+        """Delete files from a knowledge base."""
+        return self.memory_api.delete_knowledgebase_files(file_ids or [], knowledgebase_id=knowledgebase_id, **kwargs)
+
+    def delete_knowledgebase(self, knowledgebase_id: str, **kwargs: Any) -> dict[str, Any]:
+        """Delete a knowledge base."""
+        return self.memory_api.delete_knowledgebase(knowledgebase_id, **kwargs)
 
     def get_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
         """Get a specific memory."""

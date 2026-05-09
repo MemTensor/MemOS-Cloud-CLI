@@ -8,8 +8,14 @@ from memos_cli.backend.normalizers import (
     normalize_add_response,
     normalize_chat_response,
     normalize_delete_response,
+    normalize_extract_response,
     normalize_kb_create_response,
+    normalize_kb_delete_response,
+    normalize_kb_file_delete_response,
     normalize_kb_file_add_response,
+    normalize_kb_file_get_response,
+    normalize_kb_list_response,
+    normalize_rerank_response,
     normalize_search_response,
     normalize_single_memory_response,
 )
@@ -87,6 +93,53 @@ class MemoryAPI:
         if last_error is not None:
             raise last_error
         raise APIError("Failed to add memory")
+
+    def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
+        """Extract memory candidates without storing them."""
+        messages_payload: dict[str, Any] = {
+            "messages": [{"role": "user", "content": text}],
+            "extraction_types": kwargs.get("extraction_types", ["memory", "preference"]),
+            "source": "cli",
+        }
+        common_fields = [
+            "user_id",
+            "conversation_id",
+            "agent_id",
+            "app_id",
+            "run_id",
+        ]
+        for field in common_fields:
+            value = kwargs.get(field)
+            if value is not None:
+                messages_payload[field] = value
+
+        last_error: Exception | None = None
+        attempts: list[tuple[list[str], dict[str, Any]]] = [
+            (["/extract/memory", "/extract_memory"], messages_payload),
+        ]
+        for paths, payload in attempts:
+            try:
+                data = self.transport.request_first_json("POST", paths, json_body=payload)
+                return normalize_extract_response(data, original_text=text)
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+        raise APIError("Failed to extract memory")
+
+    def rerank_documents(self, query: str, documents: list[str], **kwargs: Any) -> dict[str, Any]:
+        """Rerank candidate documents for a query."""
+        payload: dict[str, Any] = {
+            "model": kwargs.get("model") or "memos-reranker-0.6b",
+            "query": query,
+            "documents": documents,
+        }
+        if kwargs.get("top_n") is not None:
+            payload["top_n"] = kwargs["top_n"]
+
+        data = self.transport.request_json("POST", "/rerank", json_body=payload)
+        return normalize_rerank_response(data, query=query, documents=documents)
 
     def search_memories(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
         """Search memories."""
@@ -267,6 +320,22 @@ class MemoryAPI:
         )
         return normalize_kb_create_response(data, name=name, description=description)
 
+    def list_knowledgebases(self, **kwargs: Any) -> list[dict[str, Any]]:
+        """List knowledge bases.
+
+        Public docs do not currently expose this route clearly; use route fallbacks.
+        """
+        data = self.transport.request_first_json(
+            "POST",
+            [
+                "/get/knowledgebase",
+                "/list/knowledgebase",
+                "/get/knowledgebases",
+            ],
+            json_body={},
+        )
+        return normalize_kb_list_response(data)
+
     def add_knowledgebase_files(
         self,
         knowledgebase_id: str,
@@ -284,6 +353,83 @@ class MemoryAPI:
             json_body=payload,
         )
         return normalize_kb_file_add_response(data, knowledgebase_id=knowledgebase_id)
+
+    def get_knowledgebase_file(
+        self,
+        file_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Get a knowledge base file/document by document id.
+
+        The documentation references a get-kb-doc endpoint. Body field naming is
+        handled compatibly via `id` then `file_id`.
+        """
+        last_error: Exception | None = None
+        for payload in ({"id": file_id}, {"file_id": file_id}):
+            try:
+                data = self.transport.request_first_json(
+                    "POST",
+                    [
+                        "/get/knowledgebase-file",
+                        "/get/knowledgebase-doc",
+                    ],
+                    json_body=payload,
+                )
+                return normalize_kb_file_get_response(data)
+            except Exception as exc:
+                last_error = exc
+
+        if last_error is not None:
+            raise last_error
+        raise APIError("Failed to get knowledge base file")
+
+    def delete_knowledgebase_files(
+        self,
+        file_ids: list[str],
+        knowledgebase_id: str | None = None,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Delete files from a knowledge base.
+
+        Public docs indicate knowledge-base document operations are available; keep
+        `knowledgebase_id` optional for routes that don't require it.
+        """
+        payload: dict[str, Any] = {"file_ids": file_ids}
+        if knowledgebase_id:
+            payload["knowledgebase_id"] = knowledgebase_id
+        data = self.transport.request_first_json(
+            "POST",
+            [
+                "/delete/knowledgebase-file",
+                "/remove/knowledgebase-file",
+            ],
+            json_body=payload,
+        )
+        return normalize_kb_file_delete_response(
+            data,
+            knowledgebase_id=knowledgebase_id,
+            file_ids=file_ids,
+        )
+
+    def delete_knowledgebase(
+        self,
+        knowledgebase_id: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        """Delete a knowledge base.
+
+        Route names are inferred from the documented create/add naming pattern.
+        """
+        payload = {"knowledgebase_id": knowledgebase_id}
+        data = self.transport.request_first_json(
+            "POST",
+            [
+                "/remove/knowledgebase",
+                "/delete/knowledgebase",
+            ],
+            json_body=payload,
+        )
+        return normalize_kb_delete_response(data, knowledgebase_id=knowledgebase_id)
 
     @staticmethod
     def _find_memory_by_id(memories: list[dict[str, Any]], memory_id: str) -> dict[str, Any] | None:

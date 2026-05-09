@@ -17,6 +17,79 @@ def normalize_add_response(data: dict, *, original_text: str) -> dict:
     return {"results": [{"memory": original_text, **data}]}
 
 
+def normalize_extract_response(data: dict, *, original_text: str) -> dict:
+    """Normalize extract response to a stable CLI shape."""
+    if isinstance(data.get("results"), list):
+        return {"results": [normalize_memory_item(item, fallback_text=original_text) for item in data["results"]]}
+
+    raw_data = data.get("data", data)
+    if isinstance(raw_data, list):
+        return {
+            "results": [normalize_memory_item(item, fallback_text=original_text) for item in raw_data]
+        }
+    if isinstance(raw_data, dict):
+        if isinstance(raw_data.get("memories"), list):
+            return {
+                "results": [
+                    normalize_memory_item(item, fallback_text=original_text)
+                    for item in raw_data["memories"]
+                ]
+            }
+        if isinstance(raw_data.get("results"), list):
+            return {
+                "results": [
+                    normalize_memory_item(item, fallback_text=original_text)
+                    for item in raw_data["results"]
+                ]
+            }
+        return {"results": [normalize_memory_item(raw_data, fallback_text=original_text)]}
+    return {"results": [{"memory": original_text, **data}]}
+
+
+def normalize_rerank_response(data: dict, *, query: str, documents: list[str]) -> dict:
+    """Normalize rerank response to a stable CLI shape."""
+    normalized = dict(data) if data else {}
+    raw_results = data.get("results") if isinstance(data, dict) else None
+    if not isinstance(raw_results, list) and isinstance(data, dict):
+        raw_data = data.get("data")
+        if isinstance(raw_data, dict):
+            raw_results = raw_data.get("results")
+    if not isinstance(raw_results, list):
+        raw_results = []
+
+    results: list[dict] = []
+    for rank, item in enumerate(raw_results, 1):
+        if not isinstance(item, dict):
+            continue
+        current = dict(item)
+        index = current.get("index")
+        if isinstance(index, int) and 0 <= index < len(documents):
+            fallback_text = documents[index]
+        else:
+            fallback_text = ""
+
+        document = current.get("document")
+        if isinstance(document, dict):
+            text = document.get("text") or fallback_text
+        elif isinstance(document, str):
+            text = document or fallback_text
+            document = {"text": text}
+        else:
+            text = fallback_text
+            document = {"text": text}
+
+        current["document"] = document
+        current["text"] = text
+        current.setdefault("relevance_score", current.get("score"))
+        current["rank"] = rank
+        results.append(current)
+
+    normalized["query"] = query
+    normalized["documents"] = documents
+    normalized["results"] = results
+    return normalized
+
+
 def normalize_chat_response(data: dict | str, *, original_query: str) -> dict:
     """Normalize chat response to a stable CLI shape."""
     if isinstance(data, str):
@@ -46,6 +119,19 @@ def normalize_kb_create_response(data: dict, *, name: str, description: str | No
     return normalized
 
 
+def normalize_kb_list_response(data: dict) -> list[dict]:
+    """Normalize knowledge base listing response."""
+    raw_data = data.get("data", data)
+    if isinstance(raw_data, list):
+        return [dict(item) for item in raw_data if isinstance(item, dict)]
+    if isinstance(raw_data, dict):
+        if isinstance(raw_data.get("knowledgebases"), list):
+            return [dict(item) for item in raw_data["knowledgebases"] if isinstance(item, dict)]
+        if isinstance(raw_data.get("items"), list):
+            return [dict(item) for item in raw_data["items"] if isinstance(item, dict)]
+    return []
+
+
 def normalize_kb_file_add_response(data: dict, *, knowledgebase_id: str) -> dict:
     """Normalize knowledge base file add response."""
     normalized = dict(data)
@@ -55,6 +141,39 @@ def normalize_kb_file_add_response(data: dict, *, knowledgebase_id: str) -> dict
         normalized["files"] = files
     else:
         normalized["files"] = []
+    return normalized
+
+
+def normalize_kb_file_get_response(data: dict) -> dict:
+    """Normalize knowledge base file get response."""
+    raw_data = data.get("data", data)
+    if isinstance(raw_data, dict):
+        return dict(raw_data)
+    if isinstance(raw_data, list) and raw_data and isinstance(raw_data[0], dict):
+        return dict(raw_data[0])
+    return {}
+
+
+def normalize_kb_delete_response(data: dict, *, knowledgebase_id: str) -> dict:
+    """Normalize knowledge base delete response."""
+    normalized = dict(data) if data else {}
+    normalized.setdefault("knowledgebase_id", knowledgebase_id)
+    normalized.setdefault("deleted", data.get("code") in {0, 200, None} if data else True)
+    return normalized
+
+
+def normalize_kb_file_delete_response(
+    data: dict,
+    *,
+    knowledgebase_id: str | None = None,
+    file_ids: list[str],
+) -> dict:
+    """Normalize knowledge base file delete response."""
+    normalized = dict(data) if data else {}
+    if knowledgebase_id is not None:
+        normalized.setdefault("knowledgebase_id", knowledgebase_id)
+    normalized.setdefault("file_ids", file_ids)
+    normalized.setdefault("deleted", data.get("code") in {0, 200, None} if data else True)
     return normalized
 
 

@@ -8,7 +8,7 @@ from memos_cli import __version__
 from memos_cli.commands.init import init_cmd
 from memos_cli.commands.config_cmd import config_app
 from memos_cli.commands.kb import kb_app
-from memos_cli.commands.memory import add, search, list, chat, get, delete
+from memos_cli.commands.memory import add, extract, rerank, search, list, chat, get, delete
 from memos_cli.state import set_runtime_options
 
 console = Console()
@@ -81,12 +81,14 @@ app.add_typer(kb_app, rich_help_panel="Advanced")
 
 # Memory commands (P0)
 app.command(rich_help_panel="Memory Operations")(add)
+app.command(rich_help_panel="Memory Operations")(extract)
 app.command(rich_help_panel="Memory Operations")(search)
 app.command(rich_help_panel="Memory Operations")(list)
 app.command(rich_help_panel="Memory Operations")(get)
 app.command(rich_help_panel="Memory Operations")(delete)
 
 # Advanced commands (P1)
+app.command(rich_help_panel="Advanced")(rerank)
 app.command(rich_help_panel="Advanced")(chat)
 
 

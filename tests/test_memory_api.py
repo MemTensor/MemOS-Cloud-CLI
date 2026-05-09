@@ -107,6 +107,88 @@ class MemoryApiListTests(unittest.TestCase):
         self.assertEqual(kwargs["json_body"]["knowledgebase_name"], "Project Docs")
         self.assertEqual(kwargs["json_body"]["knowledgebase_description"], "Internal docs")
 
+    def test_extract_memory_uses_extract_route(self) -> None:
+        class ExtractTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {
+                    "code": 0,
+                    "data": [{"memory": "User likes coffee"}],
+                }
+
+        transport = ExtractTransport()
+        api = MemoryAPI(transport)
+
+        result = api.extract_memory("User likes coffee", user_id="user-123")
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/extract/memory")
+        self.assertEqual(kwargs["json_body"]["messages"], [{"role": "user", "content": "User likes coffee"}])
+        self.assertEqual(kwargs["json_body"]["extraction_types"], ["memory", "preference"])
+        self.assertEqual(kwargs["json_body"]["user_id"], "user-123")
+        self.assertEqual(result["results"][0]["memory"], "User likes coffee")
+
+    def test_rerank_documents_uses_official_route(self) -> None:
+        class RerankTransport(StubTransport):
+            def request_json(self, method: str, path: str, **kwargs):
+                self.calls.append((method, path, kwargs))
+                return {
+                    "id": "rerank-1",
+                    "model": "memos-reranker-0.6b",
+                    "results": [
+                        {
+                            "index": 1,
+                            "document": {"text": "用户偏好简洁的回复风格"},
+                            "relevance_score": 0.98,
+                        },
+                        {
+                            "index": 0,
+                            "document": {"text": "用户喜欢打羽毛球"},
+                            "relevance_score": 0.76,
+                        },
+                    ],
+                }
+
+        transport = RerankTransport()
+        api = MemoryAPI(transport)
+
+        result = api.rerank_documents(
+            "用户有什么兴趣爱好",
+            ["用户喜欢打羽毛球", "用户偏好简洁的回复风格"],
+            top_n=1,
+        )
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/rerank")
+        self.assertEqual(kwargs["json_body"]["query"], "用户有什么兴趣爱好")
+        self.assertEqual(kwargs["json_body"]["documents"], ["用户喜欢打羽毛球", "用户偏好简洁的回复风格"])
+        self.assertEqual(kwargs["json_body"]["model"], "memos-reranker-0.6b")
+        self.assertEqual(kwargs["json_body"]["top_n"], 1)
+        self.assertEqual(result["results"][0]["text"], "用户偏好简洁的回复风格")
+        self.assertEqual(result["results"][0]["rank"], 1)
+
+    def test_list_knowledgebases_uses_inferred_route(self) -> None:
+        class KBTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {
+                    "code": 0,
+                    "data": [{"id": "kb-1", "knowledgebase_name": "Project Docs"}],
+                }
+
+        transport = KBTransport()
+        api = MemoryAPI(transport)
+
+        result = api.list_knowledgebases()
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/get/knowledgebase")
+        self.assertEqual(kwargs["json_body"], {})
+        self.assertEqual(result[0]["id"], "kb-1")
+
     def test_add_knowledgebase_files_uses_official_route(self) -> None:
         transport = StubTransport()
         api = MemoryAPI(transport)
@@ -121,6 +203,77 @@ class MemoryApiListTests(unittest.TestCase):
         self.assertEqual(path, "/add/knowledgebase-file")
         self.assertEqual(kwargs["json_body"]["knowledgebase_id"], "kb-123")
         self.assertEqual(kwargs["json_body"]["file"], [{"content": "https://example.com/a.pdf"}])
+
+    def test_get_knowledgebase_file_uses_inferred_route(self) -> None:
+        class KBTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {
+                    "code": 0,
+                    "data": {"id": "file-1", "name": "a.pdf", "status": "completed"},
+                }
+
+        transport = KBTransport()
+        api = MemoryAPI(transport)
+
+        result = api.get_knowledgebase_file("file-1")
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/get/knowledgebase-file")
+        self.assertEqual(kwargs["json_body"]["id"], "file-1")
+        self.assertEqual(result["id"], "file-1")
+
+    def test_delete_knowledgebase_files_uses_inferred_route(self) -> None:
+        class KBTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {"code": 0, "message": "ok"}
+
+        transport = KBTransport()
+        api = MemoryAPI(transport)
+
+        result = api.delete_knowledgebase_files("kb-123", ["file-1", "file-2"])
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/delete/knowledgebase-file")
+        self.assertEqual(kwargs["json_body"]["knowledgebase_id"], "kb-123")
+        self.assertEqual(kwargs["json_body"]["file_ids"], ["file-1", "file-2"])
+        self.assertTrue(result["deleted"])
+
+    def test_delete_knowledgebase_files_can_omit_knowledgebase_id(self) -> None:
+        class KBTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {"code": 0, "message": "ok"}
+
+        transport = KBTransport()
+        api = MemoryAPI(transport)
+
+        api.delete_knowledgebase_files(None, ["file-1"])
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/delete/knowledgebase-file")
+        self.assertEqual(kwargs["json_body"], {"file_ids": ["file-1"]})
+
+    def test_delete_knowledgebase_uses_inferred_route(self) -> None:
+        class KBTransport(StubTransport):
+            def request_first_json(self, method: str, paths: list[str], **kwargs):
+                self.calls.append((method, paths[0], kwargs))
+                return {"code": 0, "message": "ok"}
+
+        transport = KBTransport()
+        api = MemoryAPI(transport)
+
+        result = api.delete_knowledgebase("kb-123")
+
+        method, path, kwargs = transport.calls[0]
+        self.assertEqual(method, "POST")
+        self.assertEqual(path, "/remove/knowledgebase")
+        self.assertEqual(kwargs["json_body"]["knowledgebase_id"], "kb-123")
+        self.assertTrue(result["deleted"])
 
 
 if __name__ == "__main__":

@@ -83,7 +83,9 @@ JSON 响应使用统一 envelope：
 
 ## 下一步
 
-具体记忆能力请读取：
+按任务继续读取：
 
+- [`../memos-config/SKILL.md`](../memos-config/SKILL.md)
 - [`../memos-memory/SKILL.md`](../memos-memory/SKILL.md)
-- 自动化工作流请读取：[`../memos-memory-agent/SKILL.md`](../memos-memory-agent/SKILL.md)
+- [`../memos-kb/SKILL.md`](../memos-kb/SKILL.md)
+- 自动化工作流：[`../memos-memory-agent/SKILL.md`](../memos-memory-agent/SKILL.md)
