@@ -12,17 +12,25 @@ from rich.console import Console
 from memos_cli.backend.memos_api import APIError, AuthError, get_backend
 from memos_cli.config import DEFAULT_CONVERSATION_ID, DEFAULT_USER_ID, load_config
 from memos_cli.output import (
+    build_memory_record,
     format_add_result,
     format_extract_result,
     format_agent_envelope,
     format_chat_result,
+    format_feedback_result,
+    format_json,
+    format_memory_json_envelope,
+    format_memories_markdown,
     format_memories_text,
     format_rerank_result,
     format_single_memory,
+    strip_memory_scores,
 )
-from memos_cli.state import apply_runtime_overrides, is_agent_mode
+from memos_cli.state import apply_runtime_overrides
 
 console = Console()
+VALID_OUTPUT_FORMATS = {"table", "markdown", "agent", "json"}
+VALID_DETAILS = {"simple", "detail"}
 
 
 def _load_backend():
@@ -122,6 +130,24 @@ def parse_json_option(raw: str | None, *, option_name: str) -> Any | None:
         raise typer.Exit(1)
 
 
+def resolve_output_format(output_format: str | None) -> str:
+    """Resolve output format from the command option only."""
+    final_output = (output_format or "table").strip().lower()
+    if final_output not in VALID_OUTPUT_FORMATS:
+        console.print(f"[red]Error:[/] Invalid --format: {output_format}")
+        raise typer.Exit(1)
+    return final_output
+
+
+def validate_detail(detail: str | None) -> str:
+    """Validate detail option."""
+    final_detail = (detail or "simple").strip().lower()
+    if final_detail not in VALID_DETAILS:
+        console.print(f"[red]Error:[/] Invalid --detail: {detail}")
+        raise typer.Exit(1)
+    return final_detail
+
+
 def cmd_add(
     text: str | None,
     *,
@@ -131,11 +157,14 @@ def cmd_add(
     app_id: str | None,
     run_id: str | None,
     conversation_id: str | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute add."""
     start_time = time.time()
     content = read_add_content(text, message)
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
 
     try:
         config, backend = _load_backend()
@@ -161,7 +190,7 @@ def cmd_add(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="add",
@@ -171,7 +200,7 @@ def cmd_add(
             count=len(result.get("results", [])),
         )
         return
-    format_add_result(console, result)
+    format_add_result(console, result, output="json" if final_output == "json" else "text")
 
 
 def cmd_extract(
@@ -184,11 +213,14 @@ def cmd_extract(
     app_id: str | None,
     run_id: str | None,
     conversation_id: str | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute extract."""
     start_time = time.time()
     content = read_add_content(text, message)
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
 
     try:
         config, backend = _load_backend()
@@ -215,7 +247,7 @@ def cmd_extract(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="extract",
@@ -225,7 +257,65 @@ def cmd_extract(
             count=len(result.get("results", [])),
         )
         return
-    format_extract_result(console, result)
+    format_extract_result(console, result, output="json" if final_output == "json" else "text")
+
+
+def cmd_feedback(
+    text: str | None,
+    *,
+    feedback_content: str | None,
+    user_id: str | None,
+    agent_id: str | None,
+    app_id: str | None,
+    run_id: str | None,
+    conversation_id: str | None,
+    allow_knowledgebase_ids: str | None,
+    output_format: str,
+    detail: str,
+) -> None:
+    """Execute feedback."""
+    start_time = time.time()
+    content = read_add_content(text, feedback_content)
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
+
+    try:
+        config, backend = _load_backend()
+        scope = resolve_scope(
+            config=config,
+            user_id=user_id,
+            agent_id=agent_id,
+            app_id=app_id,
+            run_id=run_id,
+        )
+        final_conversation_id = (
+            conversation_id
+            or config.defaults.conversation_id
+            or config.defaults.run_id
+            or DEFAULT_CONVERSATION_ID
+        )
+        result = backend.add_feedback(
+            content,
+            **scope,
+            conversation_id=final_conversation_id,
+            allow_knowledgebase_ids=parse_json_option(
+                allow_knowledgebase_ids, option_name="--allow-knowledgebase-ids"
+            ),
+        )
+    except Exception as exc:
+        _handle_error(exc)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    if final_output == "agent":
+        format_agent_envelope(
+            console,
+            command="feedback",
+            data=result,
+            duration_ms=duration_ms,
+            scope={**scope, "conversation_id": final_conversation_id},
+        )
+        return
+    format_feedback_result(console, result, output="json" if final_output == "json" else "text")
 
 
 def cmd_search(
@@ -238,11 +328,14 @@ def cmd_search(
     run_id: str | None,
     conversation_id: str | None,
     limit: int,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute search."""
     start_time = time.time()
     final_query = resolve_search_query(query, query_option)
+    final_output = resolve_output_format(output_format)
+    final_detail = validate_detail(detail)
 
     try:
         config, backend = _load_backend()
@@ -263,7 +356,7 @@ def cmd_search(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="search",
@@ -271,9 +364,21 @@ def cmd_search(
             duration_ms=duration_ms,
             count=len(memories),
             scope={**scope, "conversation_id": conversation_id},
+            detail=final_detail,
         )
         return
-    format_memories_text(console, memories, title="memories")
+    if final_output == "json":
+        format_memory_json_envelope(
+            console,
+            command="search",
+            records=memories,
+            duration_ms=duration_ms,
+            detail=final_detail,
+        )
+    elif final_output == "markdown":
+        console.print(format_memories_markdown(memories, detail=final_detail))
+    else:
+        format_memories_text(console, memories, title="memories", detail=final_detail)
 
 
 def cmd_rerank(
@@ -283,20 +388,25 @@ def cmd_rerank(
     documents: list[str] | None,
     document_options: list[str] | None,
     documents_json: str | None,
+    user_id: str | None,
     model: str | None,
     top_n: int | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute rerank."""
     start_time = time.time()
     final_query = resolve_search_query(query, query_option)
     final_documents = resolve_rerank_documents(documents, document_options, documents_json)
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
 
     try:
         _, backend = _load_backend()
         result = backend.rerank_documents(
             final_query,
             final_documents,
+            user_id=user_id,
             model=model,
             top_n=top_n,
         )
@@ -304,7 +414,7 @@ def cmd_rerank(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="rerank",
@@ -313,17 +423,20 @@ def cmd_rerank(
             count=len(result.get("results", [])),
         )
         return
-    format_rerank_result(console, result)
+    format_rerank_result(console, result, output="json" if final_output == "json" else "text")
 
 
 def cmd_list(
     *,
     user_id: str | None,
     limit: int | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute list."""
     start_time = time.time()
+    final_output = resolve_output_format(output_format)
+    final_detail = validate_detail(detail)
 
     try:
         config, backend = _load_backend()
@@ -333,7 +446,7 @@ def cmd_list(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="list",
@@ -341,9 +454,21 @@ def cmd_list(
             duration_ms=duration_ms,
             count=len(memories),
             scope={"user_id": final_user_id},
+            detail=final_detail,
         )
         return
-    format_memories_text(console, memories, title="memories", show_relativity=False)
+    if final_output == "json":
+        format_memory_json_envelope(
+            console,
+            command="list",
+            records=memories,
+            duration_ms=duration_ms,
+            detail=final_detail,
+        )
+    elif final_output == "markdown":
+        console.print(format_memories_markdown(memories, detail=final_detail))
+    else:
+        format_memories_text(console, memories, title="memories", detail=final_detail, show_relevance=False)
 
 
 def cmd_chat(
@@ -373,11 +498,14 @@ def cmd_chat(
     include_preference: bool | None,
     add_message_on_answer: bool | None,
     internet_search: bool | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute chat."""
     start_time = time.time()
     final_query = resolve_chat_query(query, query_option)
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
 
     try:
         config, backend = _load_backend()
@@ -421,7 +549,7 @@ def cmd_chat(
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="chat",
@@ -430,16 +558,19 @@ def cmd_chat(
             scope={**scope, "conversation_id": final_conversation_id},
         )
         return
-    format_chat_result(console, result)
+    format_chat_result(console, result, output="json" if final_output == "json" else "text")
 
 
 def cmd_get(
     memory_id: str,
     *,
     user_id: str | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute get."""
+    final_output = resolve_output_format(output_format)
+    final_detail = validate_detail(detail)
     try:
         config, backend = _load_backend()
         final_user_id = user_id or config.defaults.user_id or DEFAULT_USER_ID
@@ -447,24 +578,44 @@ def cmd_get(
     except Exception as exc:
         _handle_error(exc)
 
-    if json_output or is_agent_mode():
+    if final_output == "agent":
+        agent_record = build_memory_record(memory, detail=final_detail)
+        if final_detail == "detail":
+            agent_record = strip_memory_scores(agent_record)
         format_agent_envelope(
             console,
             command="get",
-            data=memory,
+            data=[agent_record],
             scope={"user_id": final_user_id},
+            detail=final_detail,
+            records_preformatted=True,
         )
         return
-    format_single_memory(console, memory)
+    if final_output == "json":
+        json_record = build_memory_record(memory, detail=final_detail)
+        if final_detail == "detail":
+            json_record = strip_memory_scores(json_record)
+        format_memory_json_envelope(
+            console,
+            command="get",
+            records=json_record,
+            detail=final_detail,
+            records_preformatted=True,
+        )
+        return
+    format_single_memory(console, memory, output=final_output, detail=final_detail)
 
 
 def cmd_delete(
     memory_id: str,
     *,
     user_id: str | None,
-    json_output: bool,
+    output_format: str,
+    detail: str,
 ) -> None:
     """Execute delete."""
+    final_output = resolve_output_format(output_format)
+    validate_detail(detail)
     try:
         config, backend = _load_backend()
         final_user_id = user_id or config.defaults.user_id or DEFAULT_USER_ID
@@ -472,13 +623,16 @@ def cmd_delete(
     except Exception as exc:
         _handle_error(exc)
 
-    if json_output or is_agent_mode():
+    if final_output == "agent":
         format_agent_envelope(
             console,
             command="delete",
             data=result,
             scope={"user_id": final_user_id},
         )
+        return
+    if final_output == "json":
+        format_json(console, result)
         return
     console.print(f"[green]✓[/] Memory deleted: {memory_id}")
 

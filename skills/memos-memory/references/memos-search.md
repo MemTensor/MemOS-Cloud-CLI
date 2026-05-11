@@ -1,18 +1,28 @@
-# `+search` — Search memories
+# `memos search`
 
-## Command
+Use this command when:
+- the current answer may depend on prior user, project, or conversation context;
+- you need semantic retrieval rather than simple browsing;
+- you want to find relevant memories before responding or storing new ones.
+
+Never do:
+- paste an entire long conversation as the raw query;
+- skip identity fields when user or conversation scope matters;
+- use `search` when you already have the exact `memory_id`.
+
+Command:
 
 ```bash
 memos search -q "<query>"
 ```
 
-也支持位置参数：
+Also supports:
 
 ```bash
 memos search "<query>"
 ```
 
-## Common Flags
+Common flags:
 
 - `-q, --query`
 - `-n, --limit`
@@ -21,16 +31,16 @@ memos search "<query>"
 - `--app-id`
 - `--run-id`
 - `--conversation-id`
-- `--json`
+- `--format table|markdown|agent|json`
+- `--detail simple|detail`
 
-## Agent Example
+Example:
 
 ```bash
-memos search --json -q "restaurants food preferences" --user-id user_123 --conversation-id conv_456
+memos search --format agent --detail simple -q "restaurants food preferences" --user-id user_123 --conversation-id conv_456
 ```
 
-## Query guidance
-
-- 使用关键词，不要把整段长对话原样塞进去
-- 优先包含用户偏好、实体、主题词
-- 同时有用户身份和会话身份时，尽量都传
+Working rules:
+- use compressed keywords instead of raw long-form dialogue;
+- prioritize user preferences, entities, and topic terms in the query;
+- when both user and conversation identity exist, pass both.

@@ -1,28 +1,32 @@
-# `+delete` — Delete a memory by ID
+# `memos delete`
 
-## Command
+Use this command when:
+- the user explicitly asks to delete a memory;
+- a memory is confirmed to be wrong, expired, or should no longer be retained;
+- you already have the exact `memory_id`.
+
+Never do:
+- guess a `memory_id`;
+- delete based on a vague description without first checking the exact record;
+- remove memories just because they are low confidence unless the user or evidence confirms they are wrong.
+
+Command:
 
 ```bash
 memos delete <MEMORY_ID>
 ```
 
-## Common Flags
+Common flags:
 
 - `--user-id`
-- `--json`
+- `--format json`
 
-## Agent Example
+Example:
 
 ```bash
-memos delete --json mem_123456
+memos delete mem_123456 --format json
 ```
 
-## When to use
-
-- 用户明确要求删除某条记忆
-- 已确认某条记忆过期、错误或不应保留
-
-## Caution
-
-- 删除前优先确认 `memory_id` 是准确的
-- 如果上下文里只有模糊描述，先搜索或读取，不要直接猜测删除
+Working rules:
+- confirm the `memory_id` before deletion;
+- if context is fuzzy, use `get` or `search` first instead of deleting by guess.

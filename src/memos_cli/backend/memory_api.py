@@ -9,6 +9,7 @@ from memos_cli.backend.normalizers import (
     normalize_chat_response,
     normalize_delete_response,
     normalize_extract_response,
+    normalize_feedback_response,
     normalize_kb_create_response,
     normalize_kb_delete_response,
     normalize_kb_file_delete_response,
@@ -94,6 +95,28 @@ class MemoryAPI:
             raise last_error
         raise APIError("Failed to add memory")
 
+    def add_feedback(self, feedback_content: str, **kwargs: Any) -> dict[str, Any]:
+        """Add feedback content."""
+        payload: dict[str, Any] = {
+            "feedback_content": feedback_content,
+            "source": "cli",
+        }
+        common_fields = [
+            "user_id",
+            "conversation_id",
+            "agent_id",
+            "app_id",
+            "run_id",
+            "allow_knowledgebase_ids",
+        ]
+        for field in common_fields:
+            value = kwargs.get(field)
+            if value is not None:
+                payload[field] = value
+
+        data = self.transport.request_json("POST", "/add/feedback", json_body=payload)
+        return normalize_feedback_response(data, feedback_content=feedback_content)
+
     def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
         messages_payload: dict[str, Any] = {
@@ -135,6 +158,8 @@ class MemoryAPI:
             "query": query,
             "documents": documents,
         }
+        if kwargs.get("user_id") is not None:
+            payload["user_id"] = kwargs["user_id"]
         if kwargs.get("top_n") is not None:
             payload["top_n"] = kwargs["top_n"]
 
@@ -501,7 +526,10 @@ class MemoryAPI:
             data = self.transport.request_first_json(
                 "POST",
                 ["/get_memory_by_ids", "/get/memory_by_ids"],
-                json_body=[memory_id],
+                json_body={
+                    "memory_ids": [memory_id],
+                    **({"user_id": user_id} if user_id else {}),
+                },
             )
             normalized = extract_memory_list(data)
             matched = self._find_memory_by_id(normalized, memory_id)
@@ -527,40 +555,17 @@ class MemoryAPI:
 
     def delete_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
         """Delete a specific memory."""
-        user_id = kwargs.get("user_id")
         resolved_memory_id = memory_id
-        if user_id:
+        if memory_id and len(memory_id) < 36:
             try:
-                resolved_memory = self.get_memory(memory_id, user_id=user_id)
+                resolved_memory = self.get_memory(memory_id, user_id=kwargs.get("user_id"))
                 resolved_memory_id = str(resolved_memory.get("id") or memory_id)
             except Exception:
                 resolved_memory_id = memory_id
-        payloads = [
-            {"memory_ids": [resolved_memory_id], "user_id": user_id},
-            {"memory_ids": [resolved_memory_id], "user_ids": [user_id] if user_id else None},
-        ]
-        paths = ["/delete_memory", "/delete/memory"]
 
-        last_error: Exception | None = None
-        for path in paths:
-            for payload in payloads:
-                body = {k: v for k, v in payload.items() if v is not None}
-                try:
-                    data = self.transport.request_json("POST", path, json_body=body)
-                    return normalize_delete_response(data, resolved_memory_id)
-                except Exception as exc:
-                    last_error = exc
-
-        try:
-            data = self.transport.request_json(
-                "DELETE",
-                f"/v1/memories/{resolved_memory_id}/",
-                expected_status={200, 204},
-            )
-            return normalize_delete_response(data, resolved_memory_id)
-        except Exception as exc:
-            last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise APIError(f"Failed to delete memory: {memory_id}")
+        data = self.transport.request_json(
+            "POST",
+            "/delete/memory",
+            json_body={"memory_ids": [resolved_memory_id]},
+        )
+        return normalize_delete_response(data, resolved_memory_id)

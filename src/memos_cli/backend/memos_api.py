@@ -28,6 +28,10 @@ class MemOSBackend(BackendBase):
         """Add a new memory."""
         return self.memory_api.add_memory(text, **kwargs)
 
+    def add_feedback(self, feedback_content: str, **kwargs: Any) -> dict[str, Any]:
+        """Add feedback content."""
+        return self.memory_api.add_feedback(feedback_content, **kwargs)
+
     def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
         return self.memory_api.extract_memory(text, **kwargs)

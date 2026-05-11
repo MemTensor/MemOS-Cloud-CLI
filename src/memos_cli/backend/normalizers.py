@@ -17,6 +17,14 @@ def normalize_add_response(data: dict, *, original_text: str) -> dict:
     return {"results": [{"memory": original_text, **data}]}
 
 
+def normalize_feedback_response(data: dict, *, feedback_content: str) -> dict:
+    """Normalize feedback response to a stable CLI shape."""
+    normalized = dict(data) if data else {}
+    normalized.setdefault("feedback_content", feedback_content)
+    normalized.setdefault("status", data.get("status") if data else "success")
+    return normalized
+
+
 def normalize_extract_response(data: dict, *, original_text: str) -> dict:
     """Normalize extract response to a stable CLI shape."""
     if isinstance(data.get("results"), list):

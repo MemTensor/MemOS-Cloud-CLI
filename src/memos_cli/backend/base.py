@@ -19,6 +19,11 @@ class BackendBase(ABC):
         pass
 
     @abstractmethod
+    def add_feedback(self, feedback_content: str, **kwargs) -> dict[str, Any]:
+        """Add feedback / summary content."""
+        pass
+
+    @abstractmethod
     def extract_memory(self, text: str, **kwargs) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
         pass

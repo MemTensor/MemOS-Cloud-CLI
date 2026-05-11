@@ -1,18 +1,28 @@
-# `+add` — Add a memory
+# `memos add`
 
-## Command
+Use this command when:
+- the user states a durable preference, fact, or background detail;
+- the conversation produces a memory likely to help future turns;
+- you already know the memory should be stored, not just previewed.
+
+Never store:
+- secrets, credentials, or tokens;
+- speculative conclusions the user did not confirm;
+- temporary execution state that will not matter later.
+
+Command:
 
 ```bash
 memos add -m "<text>"
 ```
 
-也支持位置参数：
+Also supports:
 
 ```bash
 memos add "<text>"
 ```
 
-## Common Flags
+Common flags:
 
 - `-m, --message` — memory text
 - `--user-id`
@@ -20,22 +30,10 @@ memos add "<text>"
 - `--app-id`
 - `--run-id`
 - `--conversation-id`
-- `--json`
+- `--format json`
 
-## Agent Example
+Example:
 
 ```bash
-memos add --json -m "User prefers dark mode" --user-id user_123 --conversation-id conv_456
+memos add --format json -m "User prefers dark mode" --user-id user_123 --conversation-id conv_456
 ```
-
-## When to use
-
-- 用户表达了稳定偏好
-- 用户提供了长期有效的背景信息
-- 对话中出现后续可能复用的事实
-
-## Avoid
-
-- 临时上下文
-- 推测性的内容
-- 未经许可的敏感数据

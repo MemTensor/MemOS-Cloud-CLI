@@ -64,14 +64,14 @@
 
         User->>Agent: 发送问题或任务
         Skill-->>Agent: 规则：回答前先检索相关记忆
-        Agent->>CLI: memos search --json -q "..."
+        Agent->>CLI: memos search -q "..." --format agent --detail simple
         CLI->>Cloud: search memory (source=cli)
         Cloud-->>CLI: 返回相关记忆
         CLI-->>Agent: 整合好的文本结果
         Agent-->>User: 结合记忆上下文回答
 
         Skill-->>Agent: 规则：对话中出现新事实时存储
-        Agent->>CLI: memos add --json -m "用户发言内容..."
+        Agent->>CLI: memos add -m "用户发言内容..." --format json
         CLI->>Cloud: add message (source=cli)
 Cloud-->>CLI: 返回消息添加成功提示
 CLI-->>Agent: 消息添加成功提示
@@ -95,7 +95,7 @@ CLI-->>Agent: 消息添加成功提示
 | --- | --- | --- |
 | CLI 安装与初始化 | P0<br>*   `memos init` 初始化<br>    <br>*   `memos config show` 查看当前配置<br>    <br>    P1<br>    <br>*   `memos config get/set` 读取/修改单个配置项 | *   研发负责代码更新 |
 | 记忆操作命令 | P0核心接口：<br>*   `memos add`<br>    <br>*   `memos search`<br>    <br>*   `memos get`<br>    <br>*   `memos delete`<br>    <br>P1其余现有能力：<br>*   `memos kb`<br>    <br>*   `memos chat`<br>    <br>*   `memos extract/rerank`<br>    <br>*   `memos feedback`<br>    <br>*   ... | *   研发负责代码更新 |
-| 全局输出参数 | P0<br>*   默认输出 text ，处理好的内容可以直接加到 agent 上下文；<br>    <br>*   `--json`<br>    <br>P1<br>*   `-o, --output`：支持更多输出格式<br>    <br>*   `--api-key` 覆盖本地配置中的 API Key<br>    <br>*   `--base-url` 覆盖本地配置中的 API Base URL | *   研发负责代码更新 |
+| 输出参数约定 | P0<br>*   默认输出 text/table，处理好的内容可以直接加到终端或文档；<br>    <br>*   各子命令支持在命令末尾追加 `--format table|markdown|agent|json`<br>    <br>*   各子命令支持在命令末尾追加 `--detail simple|detail`<br>    <br>P1<br>*   `--api-key` 覆盖本地配置中的 API Key<br>    <br>*   `--base-url` 覆盖本地配置中的 API Base URL | *   研发负责代码更新 |
 | Agent Memory Skill | P0<br>*   提供通用 Memory Skill 模板<br>    <br>P1<br>*   Skill 模板支持配置项<br>    <br>*   Skill 效果评估与优化 |  |
 | Dashboard 快速开始 | P0对应框架增加快速开始示例：安装 / 初始化 / add / search | *   研发确认命令、参数、示例可运行，参考[mem0](https://docs.mem0.ai/platform/cli)<br>    <br>*   产品负责文案与界面更新 |
 | 文档与示例 | P0新增导航 、使用文档，与 OpenClaw / Cursor 插件 等架构互链 |

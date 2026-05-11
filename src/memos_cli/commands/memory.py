@@ -9,11 +9,15 @@ from memos_cli.commands.memory_cmd import (
     cmd_chat,
     cmd_delete,
     cmd_extract,
+    cmd_feedback,
     cmd_get,
     cmd_list,
     cmd_rerank,
     cmd_search,
 )
+
+FORMAT_HELP = "Output format: table, markdown, agent, or json."
+DETAIL_HELP = "Output detail: simple or detail."
 
 
 def add(
@@ -24,7 +28,8 @@ def add(
     app_id: str | None = typer.Option(None, "--app-id", help="App ID"),
     run_id: str | None = typer.Option(None, "--run-id", help="Run ID"),
     conversation_id: str | None = typer.Option(None, "--conversation-id", help="Conversation ID"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Add a new memory."""
     cmd_add(
@@ -35,7 +40,8 @@ def add(
         app_id=app_id,
         run_id=run_id,
         conversation_id=conversation_id,
-        json_output=json_output,
+        output_format=output_format,
+        detail=detail,
     )
 
 
@@ -52,7 +58,8 @@ def extract(
     app_id: str | None = typer.Option(None, "--app-id", help="App ID"),
     run_id: str | None = typer.Option(None, "--run-id", help="Run ID"),
     conversation_id: str | None = typer.Option(None, "--conversation-id", help="Conversation ID"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Extract memory candidates without storing them."""
     cmd_extract(
@@ -64,7 +71,35 @@ def extract(
         app_id=app_id,
         run_id=run_id,
         conversation_id=conversation_id,
-        json_output=json_output,
+        output_format=output_format,
+        detail=detail,
+    )
+
+
+def feedback(
+    text: str | None = typer.Argument(None, help="Feedback or summary content to store."),
+    feedback_content: str | None = typer.Option(None, "--feedback-content", "-m", help="Feedback content to add."),
+    user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
+    agent_id: str | None = typer.Option(None, "--agent-id", help="Agent ID"),
+    app_id: str | None = typer.Option(None, "--app-id", help="App ID"),
+    run_id: str | None = typer.Option(None, "--run-id", help="Run ID"),
+    conversation_id: str | None = typer.Option(None, "--conversation-id", help="Conversation ID"),
+    allow_knowledgebase_ids: str | None = typer.Option(None, "--allow-knowledgebase-ids", help="JSON array of allowed knowledge base IDs"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
+):
+    """Add feedback / summary content."""
+    cmd_feedback(
+        text,
+        feedback_content=feedback_content,
+        user_id=user_id,
+        agent_id=agent_id,
+        app_id=app_id,
+        run_id=run_id,
+        conversation_id=conversation_id,
+        allow_knowledgebase_ids=allow_knowledgebase_ids,
+        output_format=output_format,
+        detail=detail,
     )
 
 
@@ -77,7 +112,8 @@ def search(
     run_id: str | None = typer.Option(None, "--run-id", help="Run ID"),
     conversation_id: str | None = typer.Option(None, "--conversation-id", help="Conversation ID"),
     limit: int = typer.Option(10, "--limit", "-n", min=1, help="Number of results"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Search memories."""
     cmd_search(
@@ -89,7 +125,8 @@ def search(
         run_id=run_id,
         conversation_id=conversation_id,
         limit=limit,
-        json_output=json_output,
+        output_format=output_format,
+        detail=detail,
     )
 
 
@@ -99,9 +136,11 @@ def rerank(
     query_option: str | None = typer.Option(None, "--query", "-q", help="Query used to rerank the candidate documents"),
     document_option: List[str] | None = typer.Option(None, "--document", "-d", help="Candidate document, repeatable"),
     documents_json: str | None = typer.Option(None, "--documents-json", help="JSON array of candidate documents"),
+    user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
     model: str | None = typer.Option(None, "--model", help="Reranker model name"),
     top_n: int | None = typer.Option(None, "--top-n", min=1, help="Return top N results only"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Rerank candidate documents for a query."""
     cmd_rerank(
@@ -110,19 +149,22 @@ def rerank(
         documents=documents,
         document_options=document_option,
         documents_json=documents_json,
+        user_id=user_id,
         model=model,
         top_n=top_n,
-        json_output=json_output,
+        output_format=output_format,
+        detail=detail,
     )
 
 
 def list(
     user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
     limit: int | None = typer.Option(None, "--limit", "-n", min=1, help="Maximum memories to return"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """List memories."""
-    cmd_list(user_id=user_id, limit=limit, json_output=json_output)
+    cmd_list(user_id=user_id, limit=limit, output_format=output_format, detail=detail)
 
 
 def chat(
@@ -151,7 +193,8 @@ def chat(
     include_preference: bool | None = typer.Option(None, "--include-preference/--no-include-preference", help="Include preference memories"),
     add_message_on_answer: bool | None = typer.Option(None, "--add-message-on-answer/--no-add-message-on-answer", help="Store the dialog after answering"),
     internet_search: bool | None = typer.Option(None, "--internet-search/--no-internet-search", help="Enable internet search"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Chat with MemOS."""
     cmd_chat(
@@ -180,23 +223,26 @@ def chat(
         include_preference=include_preference,
         add_message_on_answer=add_message_on_answer,
         internet_search=internet_search,
-        json_output=json_output,
+        output_format=output_format,
+        detail=detail,
     )
 
 
 def get(
     memory_id: str = typer.Argument(..., help="Memory ID"),
     user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Get a specific memory by ID."""
-    cmd_get(memory_id, user_id=user_id, json_output=json_output)
+    cmd_get(memory_id, user_id=user_id, output_format=output_format, detail=detail)
 
 
 def delete(
     memory_id: str = typer.Argument(..., help="Memory ID to delete"),
     user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
-    json_output: bool = typer.Option(False, "--json", help="Output as JSON"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
     """Delete a memory by ID."""
-    cmd_delete(memory_id, user_id=user_id, json_output=json_output)
+    cmd_delete(memory_id, user_id=user_id, output_format=output_format, detail=detail)

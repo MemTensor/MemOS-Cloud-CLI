@@ -1,72 +1,70 @@
 ---
 name: memos-memory
-version: 1.0.0
-description: "MemOS 记忆领域能力：抽取、新增、检索、列出、聊天、读取、删除记忆。用于 P0/P1 记忆主链路。"
-metadata:
-  requires:
-    bins: ["memos"]
-  cliHelp: "memos --help"
+description: Use MemOS to extract, retrieve, persist, inspect, and delete long-term memory for user, project, and task context.
 ---
 
-# memos-memory
+# MemOS Memory Protocol
 
-**CRITICAL — 开始前必须先读取 [`../memos-shared/SKILL.md`](../memos-shared/SKILL.md)**，其中包含初始化、认证、JSON 输出和身份传递规则。
+Read first:
+- [`../memos-shared/SKILL.md`](../memos-shared/SKILL.md)
 
-## Commands
+Use this skill when:
+- the task may depend on prior user, project, or conversation context;
+- the user provides a stable new fact, preference, or background detail;
+- you want to preview extracted memory candidates before storing them;
+- you need to inspect, list, or delete an existing memory record.
 
-- [`+add`](./references/memos-add.md) — Add a memory
-- [`+extract`](./references/memos-extract.md) — Extract memory candidates without storing
-- [`+search`](./references/memos-search.md) — Search memories
-- [`+list`](./references/memos-list.md) — List memories
-- [`+chat`](./references/memos-chat.md) — Chat with MemOS
-- [`+get`](./references/memos-get.md) — Get a memory by ID
-- [`+delete`](./references/memos-delete.md) — Delete a memory by ID
+Never store:
+- secrets, API keys, tokens, or passwords;
+- unverified guesses or speculative conclusions as user facts;
+- short-lived task state that will not matter in future sessions;
+- redundant paraphrases when one concise factual memory is enough.
 
-## 使用原则
+Use these commands:
+- `memos add -m "<fact>" --user-id <USER_ID> --conversation-id <CONV_ID> --format json`
+- `memos extract -m "<message>" --user-id <USER_ID> --conversation-id <CONV_ID> --format json --detail detail`
+- `memos search -q "<query>" --user-id <USER_ID> --conversation-id <CONV_ID> --format agent --detail simple`
+- `memos list --user-id <USER_ID> --conversation-id <CONV_ID> --format table --detail simple`
+- `memos chat -q "<message>" --user-id <USER_ID> --conversation-id <CONV_ID> --format agent --detail detail`
+- `memos get <MEMORY_ID> --format json --detail detail`
+- `memos delete <MEMORY_ID> --format json`
 
-- 如果用户明确提供了一条新事实、偏好、背景信息，优先考虑 `+add`。
-- 如果用户要求“先提取看看会记住什么”，优先考虑 `+extract`。
-- 如果用户的问题可能依赖历史上下文，回答前优先考虑 `+search`。
-- 如果用户要浏览已有记忆而不是搜索，使用 `+list`。
-- 如果已经有具体 `memory_id`，使用 `+get` 或 `+delete`，不要先搜索再猜。
-- 搜索词不要机械照抄整段对话，优先提炼关键词、偏好、实体名和意图。
+Choose commands by intent:
+- use [`./references/memos-add.md`](./references/memos-add.md) when the user gives a durable fact or preference worth saving;
+- use [`./references/memos-extract.md`](./references/memos-extract.md) when the user wants a preview of memory candidates without storing;
+- use [`./references/memos-search.md`](./references/memos-search.md) before answering when historical context may matter;
+- use [`./references/memos-list.md`](./references/memos-list.md) for browsing, not targeted retrieval;
+- use [`./references/memos-chat.md`](./references/memos-chat.md) when interacting with MemOS chat capability directly;
+- use [`./references/memos-get.md`](./references/memos-get.md) and [`./references/memos-delete.md`](./references/memos-delete.md) only when you already have a concrete `memory_id`.
 
-## 常见工作流
+Working rules:
+- do not mechanically copy entire messages into search queries; compress them into entities, preferences, and intent;
+- append `--format json` at the end of the command whenever a later step needs exact `memory_id` or structured records;
+- append `--format agent` at the end of the command when the result will be injected back into model context;
+- keep `--format` and `--detail` after the command arguments and business options, at the end of the command line;
+- read result counts from `count` and structured payloads from `data`;
+- if you already have a `memory_id`, do not search first just to guess.
 
-### 1. 首次验证链路
+Examples:
 
 ```bash
 memos add -m "User likes Python"
 memos search -q "Python"
 ```
 
-### 2. Agent 检索
-
 ```bash
-memos search --json -q "user preferences about restaurants" --user-id <USER_ID> --conversation-id <CONV_ID>
+memos search -q "user preferences about restaurants" --user-id <USER_ID> --conversation-id <CONV_ID> --format agent --detail simple
 ```
 
-### 3. Agent 抽取预览
-
 ```bash
-memos extract --json -m "User likes coffee and prefers dark mode" --user-id <USER_ID> --conversation-id <CONV_ID>
+memos extract -m "User likes coffee and prefers dark mode" --user-id <USER_ID> --conversation-id <CONV_ID> --format json --detail detail
 ```
 
-### 4. Agent 存储
-
 ```bash
-memos add --json -m "User is allergic to peanuts" --user-id <USER_ID> --conversation-id <CONV_ID>
+memos add -m "User is allergic to peanuts" --user-id <USER_ID> --conversation-id <CONV_ID> --format json
 ```
 
-### 5. 定位并删除
-
 ```bash
-memos get --json <MEMORY_ID>
-memos delete --json <MEMORY_ID>
+memos get <MEMORY_ID> --format json --detail detail
+memos delete <MEMORY_ID> --format json
 ```
-
-## 输出要求
-
-- 文本模式适合人类终端阅读。
-- 只要后续步骤需要解析 `memory_id`，就使用 `--json`。
-- 列表型结果优先从 `data` 中读取数组，从 `count` 读取结果数量。

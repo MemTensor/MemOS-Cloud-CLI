@@ -25,7 +25,9 @@ MemOS-CLI/
 │       └── memory.py        # add/search/list/chat/get/delete
 ├── skills/
 │   ├── memos-shared/        # Shared config and runtime rules
+│   ├── memos-config/        # Config and initialization skill
 │   ├── memos-memory/        # Memory domain skill (P0 commands)
+│   ├── memos-kb/            # Knowledge base domain skill
 │   ├── memos-memory-agent/  # Automated recall/capture workflow
 │   └── memory_skill.md      # Backward-compatible pointer
 ├── pyproject.toml
@@ -100,18 +102,20 @@ memos kb create "Project Docs" --description "Internal knowledge base"
 memos kb file add kb_123 https://example.com/doc-a.pdf https://example.com/doc-b.pdf
 ```
 
-## JSON Output Mode
+## Output Modes
 
-For agent integration, use `--json` flag:
+Each subcommand supports `--format` and `--detail` at the end of the command line:
 
 ```bash
-memos search --json -q "python"
-memos add --json -m "User prefers TypeScript"
+memos search -q "python" --format table --detail simple
+memos search -q "python" --format markdown --detail detail
+memos search -q "python" --format agent --detail simple
+memos search -q "python" --format json --detail detail
+memos add -m "User prefers TypeScript" --format json
 ```
 
 ## Global Options
 
-- `--json`: Output as JSON for programmatic use
 - `--api-key KEY`: Override API key from config
 - `--base-url URL`: Override base URL from config
 - `--version`: Show version
@@ -140,10 +144,16 @@ memos config set defaults.user_id user123
 
 Use the provided skills to enable automatic memory management in your agent framework.
 
+Use these skills when:
+- you need shared setup, identity, and per-command output conventions such as trailing `--format` and `--detail`: `skills/memos-shared/SKILL.md`
+- you need configuration and initialization commands: `skills/memos-config/SKILL.md`
+- you need memory operations such as `extract`, `add`, `search`, `list`, `chat`, `get`, and `delete`: `skills/memos-memory/SKILL.md`
+- you need knowledge base operations: `skills/memos-kb/SKILL.md`
+- you need the default agent workflow for retrieve-before-respond and store-after-respond: `skills/memos-memory-agent/SKILL.md`
+
 Recommended entry points:
-1. `skills/memos-shared/SKILL.md` for init, config, and runtime conventions
-2. `skills/memos-memory/SKILL.md` for P0 memory commands
-3. `skills/memos-memory-agent/SKILL.md` for recall-before-respond / store-after-respond workflows
+1. Start with `skills/memos-memory-agent/SKILL.md` for automated agent workflows.
+2. Start with `skills/memos-shared/SKILL.md` if setup or runtime conventions come first.
 
 ## Telemetry & Source Tracking
 

@@ -1,23 +1,29 @@
-# `+get` — Get a memory by ID
+# `memos get`
 
-## Command
+Use this command when:
+- you already have a concrete `memory_id`;
+- you need to inspect one memory record in detail;
+- you want to verify a record before deciding whether to delete it.
+
+Never do:
+- search by guess when the ID is already known;
+- assume the record content from prior summaries without reading the source record;
+- skip structured output if a later step depends on exact fields.
+
+Command:
 
 ```bash
 memos get <MEMORY_ID>
 ```
 
-## Common Flags
+Common flags:
 
 - `--user-id`
-- `--json`
+- `--format json|markdown`
+- `--detail simple|detail`
 
-## Agent Example
+Example:
 
 ```bash
-memos get --json mem_123456
+memos get mem_123456 --format json --detail detail
 ```
-
-## When to use
-
-- 已经拿到了明确的 `memory_id`
-- 需要查看某条记忆详情后再决定是否删除

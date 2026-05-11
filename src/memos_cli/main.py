@@ -8,7 +8,7 @@ from memos_cli import __version__
 from memos_cli.commands.init import init_cmd
 from memos_cli.commands.config_cmd import config_app
 from memos_cli.commands.kb import kb_app
-from memos_cli.commands.memory import add, extract, rerank, search, list, chat, get, delete
+from memos_cli.commands.memory import add, extract, feedback, rerank, search, list, chat, get, delete
 from memos_cli.state import set_runtime_options
 
 console = Console()
@@ -30,9 +30,6 @@ app = typer.Typer(
 def main_callback(
     ctx: typer.Context,
     version: bool = typer.Option(False, "--version", help="Show version and exit."),
-    json_output: bool = typer.Option(
-        False, "--json", help="Output as JSON for agent/programmatic use."
-    ),
     api_key: str | None = typer.Option(
         None, "--api-key", help="Override API key from config."
     ),
@@ -46,7 +43,6 @@ def main_callback(
         raise typer.Exit()
 
     set_runtime_options(
-        agent_mode=json_output,
         api_key=api_key,
         base_url=base_url,
     )
@@ -55,7 +51,6 @@ def main_callback(
         _fire_telemetry(
             ctx.invoked_subcommand,
             extra={
-                "json_output": json_output,
                 "override_api_key": bool(api_key),
                 "override_base_url": bool(base_url),
             },
@@ -82,6 +77,7 @@ app.add_typer(kb_app, rich_help_panel="Advanced")
 # Memory commands (P0)
 app.command(rich_help_panel="Memory Operations")(add)
 app.command(rich_help_panel="Memory Operations")(extract)
+app.command(rich_help_panel="Memory Operations")(feedback)
 app.command(rich_help_panel="Memory Operations")(search)
 app.command(rich_help_panel="Memory Operations")(list)
 app.command(rich_help_panel="Memory Operations")(get)
