@@ -24,29 +24,29 @@ class MemOSBackend(BackendBase):
         """Ping the API to validate credentials."""
         return self.memory_api.ping(timeout=timeout)
 
-    def add_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
-        """Add a new memory."""
-        return self.memory_api.add_memory(text, **kwargs)
+    def add_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        """Add messages."""
+        return self.memory_api.add_memory(messages, **kwargs)
 
     def add_feedback(self, feedback_content: str, **kwargs: Any) -> dict[str, Any]:
         """Add feedback content."""
         return self.memory_api.add_feedback(feedback_content, **kwargs)
 
-    def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
+    def extract_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
-        return self.memory_api.extract_memory(text, **kwargs)
+        return self.memory_api.extract_memory(messages, **kwargs)
 
     def rerank_documents(self, query: str, documents: list[str], **kwargs: Any) -> dict[str, Any]:
         """Rerank candidate documents for a query."""
         return self.memory_api.rerank_documents(query, documents, **kwargs)
 
-    def search_memories(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def search_memories(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Search memories."""
         return self.memory_api.search_memories(query, **kwargs)
 
-    def list_memories(self, **kwargs: Any) -> list[dict[str, Any]]:
-        """List memories."""
-        return self.memory_api.list_memories(**kwargs)
+    def get_memories(self, **kwargs: Any) -> dict[str, Any]:
+        """Get memories."""
+        return self.memory_api.get_memories(**kwargs)
 
     def chat(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Chat with MemOS."""
@@ -80,9 +80,9 @@ class MemOSBackend(BackendBase):
         """Get a specific memory."""
         return self.memory_api.get_memory(memory_id, **kwargs)
 
-    def delete_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Delete a specific memory."""
-        return self.memory_api.delete_memory(memory_id, **kwargs)
+    def delete_memory(self, memory_ids: list[str], **kwargs: Any) -> dict[str, Any]:
+        """Delete memories."""
+        return self.memory_api.delete_memory(memory_ids, **kwargs)
 
 
 def get_backend(config: MemOSConfig) -> MemOSBackend:

@@ -199,10 +199,12 @@ def normalize_search_response(data: dict) -> list[dict]:
         raw_data.get("preference_detail_list", []) if isinstance(raw_data, dict) else []
     )
     tool_list = raw_data.get("tool_memory_detail_list", []) if isinstance(raw_data, dict) else []
+    skill_list = raw_data.get("skill_detail_list", []) if isinstance(raw_data, dict) else []
 
     results = [normalize_memory_item(item) for item in memory_list]
     results.extend(normalize_preference_item(item) for item in preference_list)
-    results.extend(normalize_memory_item(item) for item in tool_list)
+    results.extend(normalize_tool_memory_item(item) for item in tool_list)
+    results.extend(normalize_skill_item(item) for item in skill_list)
     return _sort_by_relativity_desc(results)
 
 
@@ -273,6 +275,38 @@ def normalize_preference_item(item: dict) -> dict:
     if "preference_id" in item and "id" not in normalized:
         normalized["id"] = item["preference_id"]
     normalized.setdefault("memory_type", item.get("preference_type", "preference"))
+    if normalized.get("created_at") is None and normalized.get("create_time") is not None:
+        normalized["created_at"] = normalized["create_time"]
+    if normalized.get("updated_at") is None and normalized.get("update_time") is not None:
+        normalized["updated_at"] = normalized["update_time"]
+    if normalized.get("score") is None and normalized.get("relativity") is not None:
+        normalized["score"] = normalized["relativity"]
+    return normalized
+
+
+def normalize_tool_memory_item(item: dict) -> dict:
+    """Normalize a tool-memory record into memory shape."""
+    normalized = dict(item)
+    normalized["memory"] = item.get("tool_value") or item.get("experience") or ""
+    normalized.setdefault("memory_type", item.get("tool_type", "tool_memory"))
+    if normalized.get("created_at") is None and normalized.get("create_time") is not None:
+        normalized["created_at"] = normalized["create_time"]
+    if normalized.get("updated_at") is None and normalized.get("update_time") is not None:
+        normalized["updated_at"] = normalized["update_time"]
+    if normalized.get("score") is None and normalized.get("relativity") is not None:
+        normalized["score"] = normalized["relativity"]
+    return normalized
+
+
+def normalize_skill_item(item: dict) -> dict:
+    """Normalize a skill-memory record into memory shape."""
+    normalized = dict(item)
+    skill_value = item.get("skill_value", {}) if isinstance(item.get("skill_value"), dict) else {}
+    name = skill_value.get("name", "")
+    description = skill_value.get("description", "")
+    procedure = skill_value.get("procedure", "")
+    normalized["memory"] = " | ".join(part for part in (name, description, procedure) if part)
+    normalized.setdefault("memory_type", item.get("skill_type", "skill"))
     if normalized.get("created_at") is None and normalized.get("create_time") is not None:
         normalized["created_at"] = normalized["create_time"]
     if normalized.get("updated_at") is None and normalized.get("update_time") is not None:

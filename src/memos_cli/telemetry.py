@@ -6,26 +6,28 @@ import json
 import subprocess
 from typing import Any
 
+from memos_cli.config import load_config
 from memos_cli.state import get_runtime_options
+
+
+def build_source_identifier(framework: str | None = None) -> str:
+    """Build the source identifier used in telemetry and request headers."""
+    normalized = framework.strip().lower() if framework else None
+    return f"cli-{normalized}" if normalized else "cli"
 
 
 def capture_event(event_name: str, properties: dict[str, Any] | None = None) -> None:
     """Capture telemetry event (non-blocking, never fails)."""
     try:
-        # Add source identifier
         if properties is None:
             properties = {}
-        
-        properties["source"] = "cli"
-        
-        # Detect framework if available
+
         framework = detect_framework()
+        properties["source"] = build_source_identifier(framework)
         if framework:
             properties["framework"] = framework
-        
-        # Persist CLI-side attribution for metrics/debugging.
+
         _log_event(event_name, properties)
-        
     except Exception:
         pass
 
@@ -36,9 +38,19 @@ def detect_framework() -> str | None:
     if runtime_framework:
         return runtime_framework.strip().lower()
 
+    config_framework = load_config().defaults.framework
+    if config_framework:
+        return config_framework.strip().lower()
+
     if framework := os.getenv("MEMOS_FRAMEWORK"):
         return framework.strip().lower()
 
+    if os.getenv("CODEX_HOME") or os.getenv("CODEX_SANDBOX"):
+        return "codex"
+    if os.getenv("CURSOR_TRACE_ID") or os.getenv("CURSOR_AGENT"):
+        return "cursor"
+    if os.getenv("CLAUDECODE") or os.getenv("CLAUDE_CODE_ENTRYPOINT"):
+        return "claude"
     if os.getenv("OPENCLAW_CONFIG"):
         return "openclaw"
     if os.getenv("HERMES_AGENT"):
@@ -52,6 +64,12 @@ def detect_framework() -> str | None:
             text=True,
         )
         cmdline = result.stdout.strip().lower()
+        if "codex" in cmdline:
+            return "codex"
+        if "cursor" in cmdline:
+            return "cursor"
+        if "claude" in cmdline:
+            return "claude"
         if "openclaw" in cmdline:
             return "openclaw"
         if "hermes" in cmdline:

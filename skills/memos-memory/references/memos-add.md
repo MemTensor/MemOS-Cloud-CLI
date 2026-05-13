@@ -13,27 +13,17 @@ Never store:
 Command:
 
 ```bash
-memos add -m "<text>"
-```
-
-Also supports:
-
-```bash
 memos add "<text>"
 ```
 
 Common flags:
 
-- `-m, --message` — memory text
+- `-m, --message`
 - `--user-id`
-- `--agent-id`
-- `--app-id`
-- `--run-id`
-- `--conversation-id`
 - `--format json`
 
 Example:
 
 ```bash
-memos add --format json -m "User prefers dark mode" --user-id user_123 --conversation-id conv_456
+memos add "User prefers dark mode" --user-id user_123 --format json
 ```

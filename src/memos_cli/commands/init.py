@@ -1,9 +1,14 @@
 """Initialization command for MemOS CLI."""
 from __future__ import annotations
 
+import os
+import shutil
+from pathlib import Path
+
 import typer
 from rich.console import Console
 from rich.prompt import Prompt
+from typer._completion_shared import _get_shell_name, install as install_shell_completion
 
 from memos_cli.config import (
     DEFAULT_CONVERSATION_ID,
@@ -15,36 +20,119 @@ from memos_cli.config import (
 from memos_cli.backend.memos_api import APIError, AuthError, get_backend
 
 console = Console()
+DEFAULT_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
+SUPPORTED_SKILL_AGENTS = {
+    "codex": Path.home() / ".codex" / "skills",
+    "cursor": Path.home() / ".cursor" / "skills",
+    "claude": Path.home() / ".claude" / "skills",
+    "openclaw": Path.home() / ".openclaw" / "skills",
+    "hermes": Path.home() / ".hermes" / "skills",
+}
+
+
+def _detect_completion_shell() -> str | None:
+    """Detect the user's current shell for completion installation."""
+    shell_env = os.getenv("SHELL")
+    if shell_env:
+        shell_name = Path(shell_env).name.strip().lower()
+        if shell_name in {"zsh", "bash", "fish"}:
+            return shell_name
+    return _get_shell_name()
+
+
+def _resolve_skills_dir(agent: str) -> Path:
+    """Resolve the global skills installation directory for the target agent."""
+    normalized = agent.strip().lower()
+
+    if normalized == "codex":
+        codex_home = os.getenv("CODEX_HOME")
+        if codex_home:
+            return Path(codex_home).expanduser() / "skills"
+
+    target = SUPPORTED_SKILL_AGENTS.get(normalized)
+    if target is None:
+        valid = ", ".join(sorted(SUPPORTED_SKILL_AGENTS))
+        raise ValueError(f"Unsupported --agent: {agent}. Valid values: {valid}")
+    return target
+
+
+def _install_bundled_skills(agent: str) -> Path:
+    """Install bundled MemOS operation skill into the global skills directory."""
+    repo_root = Path(__file__).resolve().parents[3]
+    source_dir = repo_root / "skills"
+    if not source_dir.exists():
+        raise FileNotFoundError(f"Bundled skills directory not found: {source_dir}")
+
+    target_root = _resolve_skills_dir(agent)
+    memos_target = target_root / "memos"
+    memos_target.mkdir(parents=True, exist_ok=True)
+
+    source_skill = source_dir / "memos-memory"
+    if not source_skill.exists():
+        raise FileNotFoundError(f"Bundled memory skill directory not found: {source_skill}")
+
+    destination = memos_target / source_skill.name
+    if destination.exists():
+        shutil.rmtree(destination)
+    shutil.copytree(source_skill, destination)
+
+    return memos_target
+
+
+def _install_cli_completion() -> tuple[str, Path] | None:
+    """Install shell completion for the current shell when supported."""
+    shell = _detect_completion_shell()
+    if shell is None:
+        return None
+    try:
+        installed_shell, installed_path = install_shell_completion(
+            shell=shell,
+            prog_name="memos",
+        )
+    except Exception:
+        return None
+    return installed_shell, installed_path
 
 
 def init_cmd(
     api_key: str | None = typer.Option(None, "--api-key", "-k", help="MemOS API key"),
-    base_url: str | None = typer.Option(None, "--base-url", "-u", help="API base URL"),
     user_id: str | None = typer.Option(None, "--user-id", help="Default user ID"),
     conversation_id: str | None = typer.Option(
         None, "--conversation-id", help="Default conversation ID"
     ),
+    agent: str | None = typer.Option(
+        None,
+        "--agent",
+        help="Install skill for target agent: codex, cursor, claude, openclaw, or hermes.",
+    ),
 ):
-    """Initialize MemOS CLI with your API credentials."""
+    """Initialize MemOS CLI and install bundled skills to an explicit agent skills directory."""
     console.print("[bold blue]◆ MemOS CLI Initialization[/]\n")
-    
+
+    if not agent:
+        console.print(
+            "[red]Error:[/] --agent is required. "
+            "Skill installation target must be specified explicitly "
+            "(codex, cursor, claude, openclaw, or hermes)."
+        )
+        raise typer.Exit(1)
+
+    try:
+        _resolve_skills_dir(agent)
+    except ValueError as exc:
+        console.print(f"\n[red]Error:[/] {exc}")
+        raise typer.Exit(1)
+
     # Get API key
     if not api_key:
         api_key = Prompt.ask(
             "[bold]Enter your MemOS API key[/]",
             password=True,
         )
-    
+
     if not api_key:
         console.print("[red]Error:[/] API key is required")
         raise typer.Exit(1)
-    
-    # Get base URL (optional)
-    if not base_url:
-        base_url = Prompt.ask(
-            "API base URL",
-            default="https://memos.memtensor.cn/api/openmem/v1",
-        )
 
     if not user_id:
         user_id = Prompt.ask(
@@ -62,11 +150,12 @@ def init_cmd(
     config = MemOSConfig(
         platform=PlatformConfig(
             api_key=api_key,
-            base_url=base_url,
+            base_url=DEFAULT_BASE_URL,
         ),
     )
     config.defaults.user_id = user_id or DEFAULT_USER_ID
     config.defaults.conversation_id = conversation_id or DEFAULT_CONVERSATION_ID
+    config.defaults.framework = agent.strip().lower()
 
     try:
         get_backend(config).ping()
@@ -81,9 +170,22 @@ def init_cmd(
         raise typer.Exit(1)
 
     save_config(config)
+    try:
+        skills_path = _install_bundled_skills(agent)
+    except ValueError as exc:
+        console.print(f"\n[red]Error:[/] {exc}")
+        raise typer.Exit(1)
 
     console.print("\n[green]✓[/] Configuration saved successfully!")
     console.print(f"  Config file: [dim]~/.memos/config.yaml[/]")
     console.print(f"  Default user ID: [dim]{config.defaults.user_id}[/]")
     console.print(f"  Default conversation ID: [dim]{config.defaults.conversation_id}[/]")
-    console.print("\n[dim]Try running:[/] memos add -m \"Your first memory\"")
+    console.print(f"  Target agent: [dim]{agent}[/]")
+    console.print(f"  Installed skill: [dim]{skills_path / 'memos-memory'}[/]")
+    completion_install = _install_cli_completion()
+    if completion_install is not None:
+        completion_shell, completion_path = completion_install
+        console.print(f"  Shell completion: [dim]{completion_shell} -> {completion_path}[/]")
+    else:
+        console.print("  Shell completion: [dim]Skipped (shell not detected or unsupported)[/]")
+    console.print('\n[dim]Try running:[/] memos add "Your first memory"')

@@ -6,7 +6,7 @@ from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
-from memos_cli.telemetry import detect_framework
+from memos_cli.telemetry import build_source_identifier, detect_framework
 
 
 DEFAULT_TIMEOUT = 30.0
@@ -31,7 +31,13 @@ class MemOSTransport:
         if not self.api_key:
             raise AuthError("No API key configured")
 
-    def _auth_headers(self, scheme: str) -> dict[str, str]:
+    def _auth_headers(
+        self,
+        scheme: str,
+        *,
+        include_tracking_headers: bool = True,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, str]:
         token = self.api_key
         if token.lower().startswith(("bearer ", "token ")):
             auth_value = token
@@ -41,10 +47,13 @@ class MemOSTransport:
         headers = {
             "Authorization": auth_value,
             "Content-Type": "application/json",
-            "X-Source": "cli",
         }
-        if self.framework:
+        if include_tracking_headers:
+            headers["X-Source"] = build_source_identifier(self.framework)
+        if include_tracking_headers and self.framework:
             headers["X-Framework"] = self.framework
+        if extra_headers:
+            headers.update(extra_headers)
         return headers
 
     def _auth_schemes(self) -> list[str]:
@@ -75,6 +84,8 @@ class MemOSTransport:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
         expected_status: set[int] | None = None,
+        include_tracking_headers: bool = True,
+        extra_headers: dict[str, str] | None = None,
     ) -> requests.Response:
         expected = expected_status or {200}
         last_response: requests.Response | None = None
@@ -85,7 +96,11 @@ class MemOSTransport:
                 response = requests.request(
                     method,
                     self._build_url(path),
-                    headers=self._auth_headers(scheme),
+                    headers=self._auth_headers(
+                        scheme,
+                        include_tracking_headers=include_tracking_headers,
+                        extra_headers=extra_headers,
+                    ),
                     json=json_body,
                     params=params,
                     timeout=timeout,
@@ -119,6 +134,8 @@ class MemOSTransport:
         json_body: Any = None,
         params: dict[str, Any] | None = None,
         expected_status: set[int] | None = None,
+        include_tracking_headers: bool = True,
+        extra_headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         response = self.request(
             method,
@@ -127,13 +144,17 @@ class MemOSTransport:
             json_body=json_body,
             params=params,
             expected_status=expected_status,
+            include_tracking_headers=include_tracking_headers,
+            extra_headers=extra_headers,
         )
         if not response.content:
             return {}
         try:
-            return response.json()
+            data = response.json()
         except ValueError as exc:
             raise APIError(f"Invalid JSON response from {path}") from exc
+        self._raise_for_business_error(data)
+        return data
 
     def request_first_json(self, method: str, paths: list[str], **kwargs: Any) -> dict[str, Any]:
         last_error: Exception | None = None
@@ -146,6 +167,46 @@ class MemOSTransport:
             raise last_error
         raise APIError("No API path configured")
 
+    def _raise_for_business_error(self, data: Any) -> None:
+        """Raise APIError when the HTTP response is 200 but the business result is failed."""
+        if not isinstance(data, dict):
+            return
+
+        code = data.get("code")
+        status = str(data.get("status", "") or "").strip().lower()
+        message = str(data.get("message", "") or data.get("msg", "") or "").strip()
+        raw_payload = data.get("data")
+        payload = raw_payload if isinstance(raw_payload, dict) else {}
+        payload_success = payload.get("success")
+        payload_status = str(payload.get("status", "") or "").strip().lower()
+
+        if payload_success is True:
+            return
+
+        if payload_success is False:
+            raise APIError(
+                _format_business_error(
+                    code=code,
+                    status=payload_status or status,
+                    message=message,
+                )
+            )
+
+        if isinstance(code, int) and code not in {0, 200}:
+            raise APIError(_format_business_error(code=code, status=status, message=message))
+
+        if status in {"error", "failed", "fail"}:
+            raise APIError(_format_business_error(code=code, status=status, message=message))
+
+        if payload_status in {"error", "failed", "fail"}:
+            raise APIError(
+                _format_business_error(
+                    code=code,
+                    status=payload_status,
+                    message=message,
+                )
+            )
+
 
 def format_http_error(response: requests.Response | None) -> str:
     """Format HTTP response into a user-facing error string."""
@@ -155,3 +216,15 @@ def format_http_error(response: requests.Response | None) -> str:
     if not body:
         return f"HTTP {response.status_code}"
     return f"HTTP {response.status_code}: {body}"
+
+
+def _format_business_error(*, code: Any, status: str, message: str) -> str:
+    """Format an application-level error embedded in a successful HTTP response."""
+    parts: list[str] = ["API business error"]
+    if code not in (None, ""):
+        parts.append(f"code={code}")
+    if status:
+        parts.append(f"status={status}")
+    if message:
+        parts.append(f"message={message}")
+    return ": ".join([parts[0], ", ".join(parts[1:])]) if len(parts) > 1 else parts[0]

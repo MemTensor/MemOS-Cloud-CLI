@@ -5,6 +5,7 @@ import typer
 from rich.console import Console
 
 from memos_cli.config import load_config, save_config
+from memos_cli.telemetry import build_source_identifier, detect_framework
 
 console = Console()
 
@@ -15,11 +16,14 @@ config_app = typer.Typer(name="config", help="Manage MemOS configuration.")
 def config_show():
     """Show current configuration."""
     config = load_config()
+    framework = config.defaults.framework or detect_framework()
+    source = build_source_identifier(framework)
     
     console.print("[bold blue]Current Configuration:[/]\n")
     console.print(f"  API Key: {config.platform.api_key[:8]}..." if config.platform.api_key else "  API Key: [dim]Not set[/]")
     console.print(f"  Base URL: {config.platform.base_url}")
-    console.print(f"  User Email: {config.platform.user_email or '[dim]Not set[/]'}")
+    console.print(f"  Source: {source}")
+    console.print(f"  Framework: {framework}" if framework else "  Framework: [dim]Not detected[/]")
     
     if config.defaults.user_id or config.defaults.agent_id:
         console.print("\n[bold]Defaults:[/]")

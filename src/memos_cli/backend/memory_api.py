@@ -1,15 +1,13 @@
 """Memory-domain API wrapper for MemOS backend."""
 from __future__ import annotations
 
+import re
 from typing import Any
 
 from memos_cli.backend.normalizers import (
     extract_memory_list,
-    normalize_add_response,
     normalize_chat_response,
     normalize_delete_response,
-    normalize_extract_response,
-    normalize_feedback_response,
     normalize_kb_create_response,
     normalize_kb_delete_response,
     normalize_kb_file_delete_response,
@@ -25,6 +23,10 @@ from memos_cli.backend.transport import APIError, AuthError, MemOSTransport
 
 class MemoryAPI:
     """Memory-specific route orchestration and response normalization."""
+
+    _UUID_PATTERN = re.compile(
+        r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+    )
 
     def __init__(self, transport: MemOSTransport):
         self.transport = transport
@@ -51,15 +53,10 @@ class MemoryAPI:
                 continue
         raise APIError("Unable to reach MemOS API with the configured base URL")
 
-    def add_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
-        """Add a new memory."""
-        text_payload: dict[str, Any] = {
-            "text": text,
-            "source": "cli",
-        }
+    def add_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
+        """Add messages."""
         message_payload: dict[str, Any] = {
-            "messages": [{"role": "user", "content": text}],
-            "source": "cli",
+            "messages": messages,
         }
 
         common_fields = [
@@ -67,46 +64,29 @@ class MemoryAPI:
             "conversation_id",
             "agent_id",
             "app_id",
-            "run_id",
             "allow_knowledgebase_ids",
             "tags",
+            "info",
+            "allow_public",
+            "async_mode",
         ]
         for field in common_fields:
             value = kwargs.get(field)
             if value is not None:
-                text_payload[field] = value
                 message_payload[field] = value
 
-        last_error: Exception | None = None
-
-        try:
-            data = self.transport.request_json("POST", "/v1/memories/", json_body=text_payload)
-            return normalize_add_response(data, original_text=text)
-        except Exception as exc:
-            last_error = exc
-
-        try:
-            data = self.transport.request_json("POST", "/add/message", json_body=message_payload)
-            return normalize_add_response(data, original_text=text)
-        except Exception as exc:
-            last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise APIError("Failed to add memory")
+        return self.transport.request_json("POST", "/add/message", json_body=message_payload)
 
     def add_feedback(self, feedback_content: str, **kwargs: Any) -> dict[str, Any]:
         """Add feedback content."""
         payload: dict[str, Any] = {
             "feedback_content": feedback_content,
-            "source": "cli",
         }
         common_fields = [
             "user_id",
             "conversation_id",
             "agent_id",
             "app_id",
-            "run_id",
             "allow_knowledgebase_ids",
         ]
         for field in common_fields:
@@ -114,22 +94,18 @@ class MemoryAPI:
             if value is not None:
                 payload[field] = value
 
-        data = self.transport.request_json("POST", "/add/feedback", json_body=payload)
-        return normalize_feedback_response(data, feedback_content=feedback_content)
+        return self.transport.request_json("POST", "/add/feedback", json_body=payload)
 
-    def extract_memory(self, text: str, **kwargs: Any) -> dict[str, Any]:
+    def extract_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
         messages_payload: dict[str, Any] = {
-            "messages": [{"role": "user", "content": text}],
+            "messages": messages,
             "extraction_types": kwargs.get("extraction_types", ["memory", "preference"]),
-            "source": "cli",
         }
         common_fields = [
             "user_id",
             "conversation_id",
             "agent_id",
-            "app_id",
-            "run_id",
         ]
         for field in common_fields:
             value = kwargs.get(field)
@@ -142,8 +118,7 @@ class MemoryAPI:
         ]
         for paths, payload in attempts:
             try:
-                data = self.transport.request_first_json("POST", paths, json_body=payload)
-                return normalize_extract_response(data, original_text=text)
+                return self.transport.request_first_json("POST", paths, json_body=payload)
             except Exception as exc:
                 last_error = exc
 
@@ -166,13 +141,13 @@ class MemoryAPI:
         data = self.transport.request_json("POST", "/rerank", json_body=payload)
         return normalize_rerank_response(data, query=query, documents=documents)
 
-    def search_memories(self, query: str, **kwargs: Any) -> list[dict[str, Any]]:
+    def search_memories(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Search memories."""
+        limit = kwargs.get("limit", 9)
         payload: dict[str, Any] = {
             "query": query,
-            "source": "cli",
-            "memory_limit_number": kwargs.get("limit", 10),
-            "include_preference": True,
+            "memory_limit_number": limit,
+            "include_preference": kwargs.get("include_preference", True),
         }
         # Only include non-None values
         if kwargs.get("user_id"):
@@ -183,74 +158,49 @@ class MemoryAPI:
             payload["agent_id"] = kwargs["agent_id"]
         if kwargs.get("app_id"):
             payload["app_id"] = kwargs["app_id"]
-        if kwargs.get("run_id"):
-            payload["run_id"] = kwargs["run_id"]
+        if kwargs.get("filter") is not None:
+            payload["filter"] = kwargs["filter"]
         if kwargs.get("knowledgebase_ids"):
             payload["knowledgebase_ids"] = kwargs["knowledgebase_ids"]
+        if kwargs.get("preference_limit") is not None:
+            payload["preference_limit_number"] = kwargs["preference_limit"]
+        if kwargs.get("include_tool_memory") is not None:
+            payload["include_tool_memory"] = kwargs["include_tool_memory"]
+        payload["tool_memory_limit_number"] = kwargs.get("tool_memory_limit", 6)
+        if kwargs.get("include_skill") is not None:
+            payload["include_skill"] = kwargs["include_skill"]
+        payload["skill_limit_number"] = kwargs.get("skill_limit", 6)
+        if kwargs.get("relativity") is not None:
+            payload["relativity"] = kwargs["relativity"]
 
         data = self.transport.request_first_json(
             "POST", ["/search/memory", "/v1/memories/search/"], json_body=payload
         )
-        return normalize_search_response(data)
+        return data
 
-    def list_memories(self, **kwargs: Any) -> list[dict[str, Any]]:
-        """List memories for the resolved user."""
+    def get_memories(self, **kwargs: Any) -> dict[str, Any]:
+        """Get memories using the documented /get/memory API."""
         user_id = kwargs.get("user_id")
-        limit = kwargs.get("limit")
-        page_size = min(kwargs.get("page_size", 50), 50)
+        if not user_id:
+            raise APIError("Get memory requires user_id")
 
-        if limit is not None and limit < 1:
-            return []
+        payload: dict[str, Any] = {"user_id": user_id}
+        if kwargs.get("page") is not None:
+            payload["page"] = kwargs["page"]
+        if kwargs.get("size") is not None:
+            payload["size"] = kwargs["size"]
+        if kwargs.get("include_preference") is not None:
+            payload["include_preference"] = kwargs["include_preference"]
+        if kwargs.get("include_tool_memory") is not None:
+            payload["include_tool_memory"] = kwargs["include_tool_memory"]
 
-        collected: list[dict[str, Any]] = []
-        last_error: Exception | None = None
-
-        if user_id:
-            try:
-                page = 1
-                while True:
-                    data = self.transport.request_json(
-                        "POST",
-                        "/get/memory",
-                        json_body={
-                            "user_id": user_id,
-                            "page": page,
-                            "size": page_size,
-                            "include_preference": True,
-                            "include_tool_memory": True,
-                        },
-                    )
-                    memories = normalize_search_response(data)
-                    collected.extend(memories)
-
-                    if limit is not None and len(collected) >= limit:
-                        return collected[:limit]
-
-                    pages = data.get("data", {}).get("pages", 0)
-                    if not pages or page >= pages or not memories:
-                        break
-                    page += 1
-                return collected
-            except Exception as exc:
-                last_error = exc
-
-        try:
-            params = {"user_id": user_id} if user_id else None
-            data = self.transport.request_first_json(
-                "GET",
-                ["/memories", "/v1/memories/"],
-                params=params,
-            )
-            memories = extract_memory_list(data)
-            if limit is not None:
-                return memories[:limit]
-            return memories
-        except Exception as exc:
-            last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise APIError("Failed to list memories")
+        data = self.transport.request_json(
+            "POST",
+            "/get/memory",
+            json_body=payload,
+            include_tracking_headers=False,
+        )
+        return data
 
     def chat(self, query: str, **kwargs: Any) -> dict[str, Any]:
         """Chat with MemOS using a non-streaming response route."""
@@ -258,71 +208,39 @@ class MemoryAPI:
         if not user_id:
             raise APIError("Chat requires user_id")
 
-        # Core API route from the official /api_docs/chat/chat documentation.
-        simple_payload: dict[str, Any] = {
-            "user_id": user_id,
-            "query": query,
-        }
-        conversation_id = kwargs.get("conversation_id")
-        if conversation_id is not None:
-            simple_payload["conversation_id"] = conversation_id
-        try:
-            data = self.transport.request_json("POST", "/chat", json_body=simple_payload)
-            return normalize_chat_response(data, original_query=query)
-        except Exception as simple_error:
-            last_error: Exception | None = simple_error
-
-        # Product API route from the newer /api-reference/chat-with-memos-(complete-response)
-        # documentation. Keep it as a compatibility fallback.
         payload: dict[str, Any] = {
             "user_id": user_id,
+            "conversation_id": kwargs.get("conversation_id"),
             "query": query,
         }
-        field_map = {
-            "conversation_id": "session_id",
-            "agent_id": "agent_id",
-            "app_id": "app_id",
-            "run_id": "run_id",
-            "mode": "mode",
-            "system_prompt": "system_prompt",
-            "top_k": "top_k",
-            "pref_top_k": "pref_top_k",
-            "model_name_or_path": "model_name_or_path",
-            "max_tokens": "max_tokens",
-            "temperature": "temperature",
-            "top_p": "top_p",
-            "internet_search": "internet_search",
-            "include_preference": "include_preference",
-            "add_message_on_answer": "add_message_on_answer",
-            "mem_cube_id": "mem_cube_id",
-            "readable_cube_ids": "readable_cube_ids",
-            "writable_cube_ids": "writable_cube_ids",
-            "history": "history",
-            "filter": "filter",
-            "threshold": "threshold",
-            "moscube": "moscube",
-        }
-        for source_field, payload_field in field_map.items():
-            value = kwargs.get(source_field)
+        field_names = [
+            "filter",
+            "knowledgebase_ids",
+            "memory_limit_number",
+            "include_preference",
+            "preference_limit_number",
+            "relativity",
+            "model_name",
+            "system_prompt",
+            "stream",
+            "max_tokens",
+            "temperature",
+            "top_p",
+            "add_message_on_answer",
+            "app_id",
+            "agent_id",
+            "tags",
+            "info",
+            "allow_public",
+            "allow_knowledgebase_ids",
+        ]
+        for field in field_names:
+            value = kwargs.get(field)
             if value is not None:
-                payload[payload_field] = value
+                payload[field] = value
 
-        try:
-            data = self.transport.request_first_json(
-                "POST",
-                [
-                    "/product/chat/complete",
-                    "/chat/complete",
-                ],
-                json_body=payload,
-            )
-            return normalize_chat_response(data, original_query=query)
-        except Exception as exc:
-            last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise APIError("Failed to chat with MemOS")
+        data = self.transport.request_json("POST", "/chat", json_body=payload)
+        return normalize_chat_response(data, original_query=query)
 
     def create_knowledgebase(
         self,
@@ -477,10 +395,16 @@ class MemoryAPI:
             return prefix_matches[0]
         return None
 
+    @classmethod
+    def _looks_like_full_memory_id(cls, memory_id: str) -> bool:
+        return bool(cls._UUID_PATTERN.fullmatch(memory_id))
+
     def get_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
         """Get a specific memory."""
+        memory_id = memory_id.strip()
         user_id = kwargs.get("user_id")
         last_error: Exception | None = None
+        matched: dict[str, Any] | None = None
 
         if user_id:
             try:
@@ -522,6 +446,9 @@ class MemoryAPI:
             except Exception as exc:
                 last_error = exc
 
+        if not self._looks_like_full_memory_id(memory_id):
+            raise APIError(f"Memory not found: {memory_id}")
+
         try:
             data = self.transport.request_first_json(
                 "POST",
@@ -553,19 +480,16 @@ class MemoryAPI:
             raise last_error
         raise APIError(f"Memory not found: {memory_id}")
 
-    def delete_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Delete a specific memory."""
-        resolved_memory_id = memory_id
-        if memory_id and len(memory_id) < 36:
-            try:
-                resolved_memory = self.get_memory(memory_id, user_id=kwargs.get("user_id"))
-                resolved_memory_id = str(resolved_memory.get("id") or memory_id)
-            except Exception:
-                resolved_memory_id = memory_id
+    def delete_memory(self, memory_ids: list[str], **kwargs: Any) -> dict[str, Any]:
+        """Delete memories using the documented API."""
+        payload: dict[str, Any] = {}
+        if memory_ids:
+            payload["memory_ids"] = memory_ids
+        if kwargs.get("user_id") is not None:
+            payload["user_id"] = kwargs["user_id"]
 
-        data = self.transport.request_json(
+        return self.transport.request_json(
             "POST",
             "/delete/memory",
-            json_body={"memory_ids": [resolved_memory_id]},
+            json_body=payload,
         )
-        return normalize_delete_response(data, resolved_memory_id)

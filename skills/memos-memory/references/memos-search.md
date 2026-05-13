@@ -8,15 +8,9 @@ Use this command when:
 Never do:
 - paste an entire long conversation as the raw query;
 - skip identity fields when user or conversation scope matters;
-- use `search` when you already have the exact `memory_id`.
+- use `search` when you already have the exact target records you need.
 
 Command:
-
-```bash
-memos search -q "<query>"
-```
-
-Also supports:
 
 ```bash
 memos search "<query>"
@@ -24,23 +18,24 @@ memos search "<query>"
 
 Common flags:
 
-- `-q, --query`
-- `-n, --limit`
 - `--user-id`
-- `--agent-id`
-- `--app-id`
-- `--run-id`
-- `--conversation-id`
+- `--include-preference`
+- `--include-tool-memory`
+- `--include-skill-memory`
+- `--memory-limit-number`
+- `--preference-limit-number`
+- `--tool-memory-limit-number`
+- `--skill-memory-limit-number`
 - `--format table|markdown|agent|json`
 - `--detail simple|detail`
 
 Example:
 
 ```bash
-memos search --format agent --detail simple -q "restaurants food preferences" --user-id user_123 --conversation-id conv_456
+memos search "restaurants food preferences" --user-id user_123 --format agent --detail simple
 ```
 
 Working rules:
 - use compressed keywords instead of raw long-form dialogue;
 - prioritize user preferences, entities, and topic terms in the query;
-- when both user and conversation identity exist, pass both.
+- pass `--user-id` when user scope matters.

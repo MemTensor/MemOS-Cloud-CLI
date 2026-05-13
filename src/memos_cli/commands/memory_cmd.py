@@ -10,27 +10,34 @@ import typer
 from rich.console import Console
 
 from memos_cli.backend.memos_api import APIError, AuthError, get_backend
-from memos_cli.config import DEFAULT_CONVERSATION_ID, DEFAULT_USER_ID, load_config
+from memos_cli.config import DEFAULT_CONVERSATION_ID, load_config
 from memos_cli.output import (
-    build_memory_record,
+    extract_memory_records_from_response,
     format_add_result,
     format_extract_result,
     format_agent_envelope,
     format_chat_result,
     format_feedback_result,
     format_json,
-    format_memory_json_envelope,
     format_memories_markdown,
     format_memories_text,
     format_rerank_result,
-    format_single_memory,
-    strip_memory_scores,
 )
 from memos_cli.state import apply_runtime_overrides
 
 console = Console()
 VALID_OUTPUT_FORMATS = {"table", "markdown", "agent", "json"}
 VALID_DETAILS = {"simple", "detail"}
+VALID_BOOL_STRINGS = {
+    "true": True,
+    "false": False,
+    "1": True,
+    "0": False,
+    "yes": True,
+    "no": False,
+    "on": True,
+    "off": False,
+}
 
 
 def _load_backend():
@@ -48,7 +55,7 @@ def resolve_scope(
 ) -> dict[str, str | None]:
     """Resolve scope IDs from CLI flags or configured defaults."""
     return {
-        "user_id": user_id or config.defaults.user_id or DEFAULT_USER_ID,
+        "user_id": user_id or config.defaults.user_id,
         "agent_id": agent_id or config.defaults.agent_id,
         "app_id": app_id or config.defaults.app_id,
         "run_id": run_id or config.defaults.run_id,
@@ -65,11 +72,44 @@ def _handle_error(exc: Exception) -> None:
     raise typer.Exit(1)
 
 
+def read_stdin_text() -> str:
+    """Read stdin text when available."""
+    if sys.stdin.isatty():
+        return ""
+    return sys.stdin.read().strip()
+
+
+def resolve_messages_json(messages_json: str | None) -> list[dict[str, Any]]:
+    """Resolve required messages payload for add."""
+    raw = messages_json or read_stdin_text()
+    if not raw:
+        console.print("[red]Error:[/] No --messages provided")
+        raise typer.Exit(1)
+    parsed = parse_json_option(raw, option_name="--messages")
+    if not isinstance(parsed, list) or not all(isinstance(item, dict) for item in parsed):
+        console.print("[red]Error:[/] --messages must be a JSON array of objects")
+        raise typer.Exit(1)
+    return parsed
+
+
+def resolve_message_payload(
+    *,
+    message_text: str | None = None,
+    message_option: str | None = None,
+) -> list[dict[str, Any]]:
+    """Resolve a single message string into the documented API messages payload."""
+    content = message_option or message_text or read_stdin_text()
+    if not content:
+        console.print("[red]Error:[/] No message provided")
+        raise typer.Exit(1)
+    return [{"role": "user", "content": content}]
+
+
 def read_add_content(text: str | None, message: str | None) -> str:
-    """Resolve add content from argument, option, or stdin."""
+    """Resolve text content from argument, option, or stdin."""
     content = text or message
-    if not content and not sys.stdin.isatty():
-        content = sys.stdin.read().strip()
+    if not content:
+        content = read_stdin_text()
     if not content:
         console.print("[red]Error:[/] No text provided")
         raise typer.Exit(1)
@@ -148,21 +188,37 @@ def validate_detail(detail: str | None) -> str:
     return final_detail
 
 
+def parse_bool_option(value: str | None, *, option_name: str) -> bool | None:
+    """Parse a CLI boolean option from explicit true/false style strings."""
+    if value is None:
+        return None
+    normalized = value.strip().lower()
+    if normalized not in VALID_BOOL_STRINGS:
+        console.print(f"[red]Error:[/] Invalid value for {option_name}: {value}")
+        console.print(f"[dim]Use one of: true, false, 1, 0, yes, no, on, off[/]")
+        raise typer.Exit(1)
+    return VALID_BOOL_STRINGS[normalized]
+
+
 def cmd_add(
-    text: str | None,
     *,
-    message: str | None,
+    message_text: str | None,
+    message_option: str | None,
     user_id: str | None,
     agent_id: str | None,
     app_id: str | None,
-    run_id: str | None,
     conversation_id: str | None,
+    tags_json: str | None,
+    info_json: str | None,
+    allow_public: bool | None,
+    allow_knowledgebase_ids: str | None,
+    async_mode: bool | None,
     output_format: str,
     detail: str,
 ) -> None:
     """Execute add."""
     start_time = time.time()
-    content = read_add_content(text, message)
+    messages = resolve_message_payload(message_text=message_text, message_option=message_option)
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
 
@@ -173,18 +229,24 @@ def cmd_add(
             user_id=user_id,
             agent_id=agent_id,
             app_id=app_id,
-            run_id=run_id,
+            run_id=None,
         )
         final_conversation_id = (
             conversation_id
             or config.defaults.conversation_id
-            or config.defaults.run_id
             or DEFAULT_CONVERSATION_ID
         )
         result = backend.add_memory(
-            content,
+            messages,
             **scope,
             conversation_id=final_conversation_id,
+            tags=parse_json_option(tags_json, option_name="--tags"),
+            info=parse_json_option(info_json, option_name="--info"),
+            allow_public=allow_public,
+            allow_knowledgebase_ids=parse_json_option(
+                allow_knowledgebase_ids, option_name="--allow-knowledgebase-ids"
+            ),
+            async_mode=async_mode,
         )
     except Exception as exc:
         _handle_error(exc)
@@ -194,20 +256,22 @@ def cmd_add(
         format_agent_envelope(
             console,
             command="add",
-            data=result,
+            data=extract_memory_records_from_response(result, detail=final_detail),
             duration_ms=duration_ms,
             scope={**scope, "conversation_id": final_conversation_id},
-            count=len(result.get("results", [])),
             detail=final_detail,
         )
         return
-    format_add_result(console, result, output="json" if final_output == "json" else "text")
+    if final_output == "json":
+        format_json(console, result)
+        return
+    format_add_result(console, result, output="text")
 
 
 def cmd_extract(
-    text: str | None,
     *,
-    message: str | None,
+    message_text: str | None,
+    message_option: str | None,
     extraction_types: list[str],
     user_id: str | None,
     agent_id: str | None,
@@ -219,7 +283,7 @@ def cmd_extract(
 ) -> None:
     """Execute extract."""
     start_time = time.time()
-    content = read_add_content(text, message)
+    messages = resolve_message_payload(message_text=message_text, message_option=message_option)
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
 
@@ -239,7 +303,7 @@ def cmd_extract(
             or DEFAULT_CONVERSATION_ID
         )
         result = backend.extract_memory(
-            content,
+            messages,
             **scope,
             conversation_id=final_conversation_id,
             extraction_types=extraction_types,
@@ -252,19 +316,21 @@ def cmd_extract(
         format_agent_envelope(
             console,
             command="extract",
-            data=result,
+            data=extract_memory_records_from_response(result, detail=final_detail),
             duration_ms=duration_ms,
             scope={**scope, "conversation_id": final_conversation_id},
-            count=len(result.get("results", [])),
             detail=final_detail,
         )
         return
-    format_extract_result(console, result, output="json" if final_output == "json" else "text")
+    if final_output == "json":
+        format_json(console, result)
+        return
+    format_extract_result(console, result, output="text")
 
 
 def cmd_feedback(
-    text: str | None,
     *,
+    feedback_text: str | None,
     feedback_content: str | None,
     user_id: str | None,
     agent_id: str | None,
@@ -277,7 +343,10 @@ def cmd_feedback(
 ) -> None:
     """Execute feedback."""
     start_time = time.time()
-    content = read_add_content(text, feedback_content)
+    content = feedback_content or feedback_text or read_stdin_text()
+    if not content:
+        console.print("[red]Error:[/] No --feedback-content provided")
+        raise typer.Exit(1)
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
 
@@ -318,7 +387,10 @@ def cmd_feedback(
             detail=final_detail,
         )
         return
-    format_feedback_result(console, result, output="json" if final_output == "json" else "text")
+    if final_output == "json":
+        format_json(console, result)
+        return
+    format_feedback_result(console, result, output="text")
 
 
 def cmd_search(
@@ -326,11 +398,17 @@ def cmd_search(
     *,
     query_option: str | None,
     user_id: str | None,
-    agent_id: str | None,
-    app_id: str | None,
-    run_id: str | None,
     conversation_id: str | None,
+    filter_json: str | None,
+    knowledgebase_ids: str | None,
     limit: int,
+    include_preference: str | None,
+    preference_limit: int | None,
+    include_tool_memory: str | None,
+    tool_memory_limit: int | None,
+    include_skill: str | None,
+    skill_limit: int | None,
+    relativity: float | None,
     output_format: str,
     detail: str,
 ) -> None:
@@ -342,23 +420,33 @@ def cmd_search(
 
     try:
         config, backend = _load_backend()
-        scope = resolve_scope(
-            config=config,
-            user_id=user_id,
-            agent_id=agent_id,
-            app_id=app_id,
-            run_id=run_id,
+        final_user_id = user_id or config.defaults.user_id
+        final_conversation_id = (
+            conversation_id
+            or config.defaults.conversation_id
+            or config.defaults.run_id
+            or DEFAULT_CONVERSATION_ID
         )
-        memories = backend.search_memories(
+        response = backend.search_memories(
             final_query,
-            **scope,
-            conversation_id=conversation_id,
+            user_id=final_user_id,
+            conversation_id=final_conversation_id,
+            filter=parse_json_option(filter_json, option_name="--filter"),
+            knowledgebase_ids=parse_json_option(knowledgebase_ids, option_name="--knowledgebase-ids"),
             limit=limit,
+            include_preference=parse_bool_option(include_preference, option_name="--include-preference"),
+            preference_limit=preference_limit,
+            include_tool_memory=parse_bool_option(include_tool_memory, option_name="--include-tool-memory"),
+            tool_memory_limit=tool_memory_limit,
+            include_skill=parse_bool_option(include_skill, option_name="--include-skill-memory"),
+            skill_limit=skill_limit,
+            relativity=relativity,
         )
     except Exception as exc:
         _handle_error(exc)
 
     duration_ms = int((time.time() - start_time) * 1000)
+    memories = extract_memory_records_from_response(response, detail=final_detail)[:limit]
     if final_output == "agent":
         format_agent_envelope(
             console,
@@ -366,20 +454,14 @@ def cmd_search(
             data=memories,
             duration_ms=duration_ms,
             count=len(memories),
-            scope={**scope, "conversation_id": conversation_id},
+            scope={"user_id": final_user_id, "conversation_id": final_conversation_id},
             detail=final_detail,
         )
         return
     if final_output == "json":
-        format_memory_json_envelope(
-            console,
-            command="search",
-            records=memories,
-            duration_ms=duration_ms,
-            detail=final_detail,
-        )
+        format_json(console, response)
     elif final_output == "markdown":
-        console.print(format_memories_markdown(memories, detail=final_detail))
+        console.print(format_memories_markdown(memories, detail=final_detail, records_preformatted=True))
     else:
         format_memories_text(console, memories, title="memories", detail=final_detail)
 
@@ -387,8 +469,8 @@ def cmd_search(
 def cmd_rerank(
     query: str | None,
     *,
-    query_option: str | None,
     documents: list[str] | None,
+    query_option: str | None,
     document_options: list[str] | None,
     documents_json: str | None,
     user_id: str | None,
@@ -427,52 +509,10 @@ def cmd_rerank(
             detail=final_detail,
         )
         return
-    format_rerank_result(console, result, output="json" if final_output == "json" else "text")
-
-
-def cmd_list(
-    *,
-    user_id: str | None,
-    limit: int | None,
-    output_format: str,
-    detail: str,
-) -> None:
-    """Execute list."""
-    start_time = time.time()
-    final_output = resolve_output_format(output_format)
-    final_detail = validate_detail(detail)
-
-    try:
-        config, backend = _load_backend()
-        final_user_id = user_id or config.defaults.user_id or DEFAULT_USER_ID
-        memories = backend.list_memories(user_id=final_user_id, limit=limit)
-    except Exception as exc:
-        _handle_error(exc)
-
-    duration_ms = int((time.time() - start_time) * 1000)
-    if final_output == "agent":
-        format_agent_envelope(
-            console,
-            command="list",
-            data=memories,
-            duration_ms=duration_ms,
-            count=len(memories),
-            scope={"user_id": final_user_id},
-            detail=final_detail,
-        )
-        return
     if final_output == "json":
-        format_memory_json_envelope(
-            console,
-            command="list",
-            records=memories,
-            duration_ms=duration_ms,
-            detail=final_detail,
-        )
-    elif final_output == "markdown":
-        console.print(format_memories_markdown(memories, detail=final_detail))
-    else:
-        format_memories_text(console, memories, title="memories", detail=final_detail, show_relevance=False)
+        format_json(console, result)
+        return
+    format_rerank_result(console, result, output="text")
 
 
 def cmd_chat(
@@ -482,26 +522,24 @@ def cmd_chat(
     user_id: str | None,
     agent_id: str | None,
     app_id: str | None,
-    run_id: str | None,
     conversation_id: str | None,
-    mode: str | None,
-    top_k: int | None,
-    pref_top_k: int | None,
-    model_name_or_path: str | None,
+    filter_json: str | None,
+    knowledgebase_ids: str | None,
+    memory_limit_number: int | None,
+    include_preference: bool | None,
+    preference_limit_number: int | None,
+    relativity: float | None,
+    model_name: str | None,
     system_prompt: str | None,
+    stream: bool | None,
     max_tokens: int | None,
     temperature: float | None,
     top_p: float | None,
-    mem_cube_id: str | None,
-    readable_cube_ids: str | None,
-    writable_cube_ids: str | None,
-    history: str | None,
-    filter_json: str | None,
-    threshold: float | None,
-    moscube: bool | None,
-    include_preference: bool | None,
     add_message_on_answer: bool | None,
-    internet_search: bool | None,
+    tags_json: str | None,
+    info_json: str | None,
+    allow_public: bool | None,
+    allow_knowledgebase_ids: str | None,
     output_format: str,
     detail: str,
 ) -> None:
@@ -518,36 +556,36 @@ def cmd_chat(
             user_id=user_id,
             agent_id=agent_id,
             app_id=app_id,
-            run_id=run_id,
+            run_id=None,
         )
         final_conversation_id = (
             conversation_id
             or config.defaults.conversation_id
-            or config.defaults.run_id
             or DEFAULT_CONVERSATION_ID
         )
         result = backend.chat(
             final_query,
             **scope,
             conversation_id=final_conversation_id,
-            mode=mode,
-            top_k=top_k,
-            pref_top_k=pref_top_k,
-            model_name_or_path=model_name_or_path,
+            filter=parse_json_option(filter_json, option_name="--filter"),
+            knowledgebase_ids=parse_json_option(knowledgebase_ids, option_name="--knowledgebase-ids"),
+            memory_limit_number=memory_limit_number,
+            include_preference=include_preference,
+            preference_limit_number=preference_limit_number,
+            relativity=relativity,
+            model_name=model_name,
             system_prompt=system_prompt,
+            stream=stream,
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
-            mem_cube_id=mem_cube_id,
-            readable_cube_ids=parse_json_option(readable_cube_ids, option_name="--readable-cube-ids"),
-            writable_cube_ids=parse_json_option(writable_cube_ids, option_name="--writable-cube-ids"),
-            history=parse_json_option(history, option_name="--history"),
-            filter=parse_json_option(filter_json, option_name="--filter"),
-            threshold=threshold,
-            moscube=moscube,
-            include_preference=include_preference,
             add_message_on_answer=add_message_on_answer,
-            internet_search=internet_search,
+            tags=parse_json_option(tags_json, option_name="--tags"),
+            info=parse_json_option(info_json, option_name="--info"),
+            allow_public=allow_public,
+            allow_knowledgebase_ids=parse_json_option(
+                allow_knowledgebase_ids, option_name="--allow-knowledgebase-ids"
+            ),
         )
     except Exception as exc:
         _handle_error(exc)
@@ -563,56 +601,63 @@ def cmd_chat(
             detail=final_detail,
         )
         return
-    format_chat_result(console, result, output="json" if final_output == "json" else "text")
+    if final_output == "json":
+        format_json(console, result)
+        return
+    format_chat_result(console, result, output="text")
 
 
 def cmd_get(
-    memory_id: str,
     *,
     user_id: str | None,
+    page: int | None,
+    size: int | None,
+    include_preference: str | None,
+    include_tool_memory: str | None,
     output_format: str,
     detail: str,
 ) -> None:
     """Execute get."""
+    start_time = time.time()
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
     try:
         config, backend = _load_backend()
-        final_user_id = user_id or config.defaults.user_id or DEFAULT_USER_ID
-        memory = backend.get_memory(memory_id, user_id=final_user_id)
+        final_user_id = user_id or config.defaults.user_id
+        response = backend.get_memories(
+            user_id=final_user_id,
+            page=page,
+            size=size,
+            include_preference=parse_bool_option(include_preference, option_name="--include-preference"),
+            include_tool_memory=parse_bool_option(include_tool_memory, option_name="--include-tool-memory"),
+        )
     except Exception as exc:
         _handle_error(exc)
 
+    duration_ms = int((time.time() - start_time) * 1000)
+    memories = extract_memory_records_from_response(response, detail=final_detail)
     if final_output == "agent":
-        agent_record = build_memory_record(memory, detail=final_detail)
-        if final_detail == "detail":
-            agent_record = strip_memory_scores(agent_record)
         format_agent_envelope(
             console,
             command="get",
-            data=[agent_record],
+            data=memories,
+            duration_ms=duration_ms,
+            count=len(memories),
             scope={"user_id": final_user_id},
             detail=final_detail,
-            records_preformatted=True,
         )
         return
     if final_output == "json":
-        json_record = build_memory_record(memory, detail=final_detail)
-        if final_detail == "detail":
-            json_record = strip_memory_scores(json_record)
-        format_memory_json_envelope(
-            console,
-            command="get",
-            records=json_record,
-            detail=final_detail,
-            records_preformatted=True,
-        )
+        format_json(console, response)
         return
-    format_single_memory(console, memory, output=final_output, detail=final_detail)
+    if final_output == "markdown":
+        console.print(format_memories_markdown(memories, detail=final_detail, records_preformatted=True))
+        return
+    format_memories_text(console, memories, title="memories", detail=final_detail, show_relevance=False)
 
 
 def cmd_delete(
-    memory_id: str,
+    memory_id: str | None,
     *,
     user_id: str | None,
     output_format: str,
@@ -622,9 +667,14 @@ def cmd_delete(
     final_output = resolve_output_format(output_format)
     validate_detail(detail)
     try:
-        config, backend = _load_backend()
-        final_user_id = user_id or config.defaults.user_id or DEFAULT_USER_ID
-        result = backend.delete_memory(memory_id, user_id=final_user_id)
+        _, backend = _load_backend()
+        if memory_id:
+            result = backend.delete_memory([memory_id])
+        elif user_id:
+            result = backend.delete_memory([], user_id=user_id)
+        else:
+            console.print("[red]Error:[/] Provide either MEMORY_ID or --user-id")
+            raise typer.Exit(1)
     except Exception as exc:
         _handle_error(exc)
 
@@ -633,13 +683,12 @@ def cmd_delete(
             console,
             command="delete",
             data=result,
-            scope={"user_id": final_user_id},
         )
         return
     if final_output == "json":
         format_json(console, result)
         return
-    console.print(f"[green]✓[/] Memory deleted: {memory_id}")
+    console.print("[green]✓[/] Memory deleted")
 
 
 def main() -> Any:

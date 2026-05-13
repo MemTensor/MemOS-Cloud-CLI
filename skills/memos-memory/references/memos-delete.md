@@ -6,7 +6,7 @@ Use this command when:
 - you already have the exact `memory_id`.
 
 Never do:
-- guess a `memory_id`;
+- guess `memory_id`;
 - delete based on a vague description without first checking the exact record;
 - remove memories just because they are low confidence unless the user or evidence confirms they are wrong.
 
@@ -18,7 +18,6 @@ memos delete <MEMORY_ID>
 
 Common flags:
 
-- `--user-id`
 - `--format json`
 
 Example:

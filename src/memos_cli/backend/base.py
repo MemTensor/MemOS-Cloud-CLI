@@ -14,8 +14,8 @@ class BackendBase(ABC):
         pass
     
     @abstractmethod
-    def add_memory(self, text: str, **kwargs) -> dict[str, Any]:
-        """Add a new memory."""
+    def add_memory(self, messages: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
+        """Add messages."""
         pass
 
     @abstractmethod
@@ -24,7 +24,7 @@ class BackendBase(ABC):
         pass
 
     @abstractmethod
-    def extract_memory(self, text: str, **kwargs) -> dict[str, Any]:
+    def extract_memory(self, messages: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
         """Extract memory candidates without storing them."""
         pass
     
@@ -34,13 +34,13 @@ class BackendBase(ABC):
         pass
 
     @abstractmethod
-    def search_memories(self, query: str, **kwargs) -> list[dict[str, Any]]:
+    def search_memories(self, query: str, **kwargs) -> dict[str, Any]:
         """Search memories."""
         pass
 
     @abstractmethod
-    def list_memories(self, **kwargs) -> list[dict[str, Any]]:
-        """List memories."""
+    def get_memories(self, **kwargs) -> dict[str, Any]:
+        """Get memories."""
         pass
 
     @abstractmethod
@@ -89,6 +89,6 @@ class BackendBase(ABC):
         pass
     
     @abstractmethod
-    def delete_memory(self, memory_id: str) -> dict[str, Any]:
-        """Delete a memory."""
+    def delete_memory(self, memory_ids: list[str], **kwargs) -> dict[str, Any]:
+        """Delete memories."""
         pass

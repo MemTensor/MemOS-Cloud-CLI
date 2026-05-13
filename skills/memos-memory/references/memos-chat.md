@@ -16,29 +16,15 @@ Command:
 memos chat "<query>"
 ```
 
-Also supports:
-
-```bash
-memos chat -q "<query>"
-```
-
 Common flags:
 
-- `-q, --query`
 - `--user-id`
-- `--conversation-id`
-- `--agent-id`
-- `--app-id`
-- `--run-id`
-- `--mode`
-- `--top-k`
-- `--pref-top-k`
 - `--format agent|json`
 
 Example:
 
 ```bash
-memos chat --format agent -q "What do you know about my travel preferences?" --user-id user_123 --conversation-id conv_456
+memos chat "What do you know about my travel preferences?" --user-id user_123 --format agent
 ```
 
 Working rules:

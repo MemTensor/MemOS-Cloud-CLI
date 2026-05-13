@@ -44,6 +44,80 @@ def build_memory_record(mem: dict, *, detail: str = "simple") -> dict[str, Any]:
     return record
 
 
+def extract_memory_records_from_response(data: dict[str, Any], *, detail: str = "simple") -> list[dict[str, Any]]:
+    """Project official API JSON into CLI display records for non-JSON output."""
+    raw_data = data.get("data", data) if isinstance(data, dict) else data
+    items: list[tuple[str, dict[str, Any]]] = []
+
+    if isinstance(raw_data, list):
+        items = [("memory", item) for item in raw_data if isinstance(item, dict)]
+    elif isinstance(raw_data, dict):
+        if isinstance(raw_data.get("memory_detail_list"), list):
+            items.extend(("memory", item) for item in raw_data["memory_detail_list"] if isinstance(item, dict))
+        if isinstance(raw_data.get("preference_detail_list"), list):
+            items.extend(("preference", item) for item in raw_data["preference_detail_list"] if isinstance(item, dict))
+        if isinstance(raw_data.get("tool_memory_detail_list"), list):
+            items.extend(("tool_memory", item) for item in raw_data["tool_memory_detail_list"] if isinstance(item, dict))
+        if isinstance(raw_data.get("skill_detail_list"), list):
+            items.extend(("skill", item) for item in raw_data["skill_detail_list"] if isinstance(item, dict))
+        if isinstance(raw_data.get("memories"), list):
+            items.extend(("memory", item) for item in raw_data["memories"] if isinstance(item, dict))
+        if not items and any(key in raw_data for key in ("id", "memory", "text", "memory_value", "content")):
+            items.append(("memory", raw_data))
+    elif isinstance(data, dict) and isinstance(data.get("results"), list):
+        items = [("memory", item) for item in data["results"] if isinstance(item, dict)]
+
+    records: list[dict[str, Any]] = []
+    for item_kind, item in items:
+        normalized_item = _normalize_display_item(item_kind, item)
+        records.append(normalized_item)
+    return records
+
+
+def _normalize_display_item(item_kind: str, item: dict[str, Any]) -> dict[str, Any]:
+    """Normalize heterogeneous search/get records for table/markdown/agent output."""
+    normalized = dict(item)
+
+    if item_kind == "preference":
+        normalized["memory"] = item.get("preference") or item.get("memory") or ""
+        normalized.setdefault("id", item.get("preference_id"))
+        normalized.setdefault("memory_type", item.get("preference_type", "preference"))
+    elif item_kind == "tool_memory":
+        normalized["memory"] = item.get("tool_value") or item.get("experience") or item.get("memory") or ""
+        normalized.setdefault("id", item.get("tool_memory_id") or item.get("id"))
+        normalized.setdefault("memory_type", item.get("tool_type", "tool_memory"))
+    elif item_kind == "skill":
+        skill_value = item.get("skill_value", {}) if isinstance(item.get("skill_value"), dict) else {}
+        normalized["memory"] = " | ".join(
+            part for part in (
+                skill_value.get("name", ""),
+                skill_value.get("description", ""),
+                skill_value.get("procedure", ""),
+            ) if part
+        )
+        normalized.setdefault("id", item.get("skill_id") or item.get("id"))
+        normalized.setdefault("memory_type", item.get("skill_type", "skill"))
+    else:
+        normalized["memory"] = (
+            item.get("memory")
+            or item.get("text")
+            or item.get("memory_value")
+            or item.get("content")
+            or ""
+        )
+        if "memory_id" in item and "id" not in normalized:
+            normalized["id"] = item["memory_id"]
+
+    if normalized.get("created_at") is None and normalized.get("create_time") is not None:
+        normalized["created_at"] = normalized["create_time"]
+    if normalized.get("updated_at") is None and normalized.get("update_time") is not None:
+        normalized["updated_at"] = normalized["update_time"]
+    if normalized.get("score") is None and normalized.get("relativity") is not None:
+        normalized["score"] = normalized["relativity"]
+
+    return normalized
+
+
 def strip_memory_scores(record: dict[str, Any]) -> dict[str, Any]:
     """Remove confidence and relevance fields from a formatted memory record."""
     stripped = dict(record)
@@ -98,9 +172,10 @@ def format_memories_text(
         table.add_column(
             "ID",
             style=DIM_COLOR,
-            min_width=24,
-            width=34,
-            no_wrap=True,
+            min_width=36,
+            width=40,
+            no_wrap=False,
+            overflow="fold",
             justify="center",
             vertical="middle",
         )
@@ -115,7 +190,6 @@ def format_memories_text(
             vertical="middle",
         )
         table.add_column("TYPE", style=ACCENT_COLOR, width=18, no_wrap=True, justify="center", vertical="middle")
-        table.add_column("CONF", style=DIM_COLOR, width=8, no_wrap=True, justify="center", vertical="middle")
         if show_relevance:
             table.add_column("REL", style=DIM_COLOR, width=8, no_wrap=True, justify="center", vertical="middle")
         table.add_column("UPDATED", style=DIM_COLOR, width=18, no_wrap=True, justify="center", vertical="middle")
@@ -147,7 +221,6 @@ def format_memories_text(
                 Text(mem_id, style=row_style),
                 Text(memory_text, style=row_style),
                 Text(str(mem_type), style=row_style),
-                Text(_format_score(mem.get("confidence")), style=row_style),
             ]
             if show_relevance:
                 cells.append(Text(_format_score(score), style=row_style))
@@ -268,17 +341,38 @@ def format_add_result(console: Console, result: dict | list, output: str = "text
     if output == "quiet":
         return
 
-    results = result if isinstance(result, list) else result.get("results", [result])
+    results = extract_memory_records_from_response(result, detail="simple")
 
     if not results:
-        console.print("  [dim]No memories extracted.[/]")
+        message = ""
+        status = ""
+        payload_status = ""
+        if isinstance(result, dict):
+            message = str(result.get("message", "") or result.get("msg", "") or "").strip()
+            status = str(result.get("status", "") or "").strip().lower()
+            raw_payload = result.get("data")
+            if isinstance(raw_payload, dict):
+                payload_status = str(raw_payload.get("status", "") or "").strip().lower()
+
+        console.print()
+        if message and payload_status == "running":
+            console.print(f"[green]✓[/] {message} [dim](task running)[/]")
+        elif message:
+            console.print(f"[green]✓[/] {message}")
+        elif status == "success":
+            console.print("[green]✓[/] Success")
+        elif payload_status == "running":
+            console.print("[green]✓[/] Task accepted [dim](running)[/]")
+        else:
+            console.print("[green]✓[/] Memory added")
+        console.print()
         return
 
     console.print()
 
     for r in results:
-        memory = r.get("memory") or r.get("text") or r.get("content") or ""
-        mem_id = r.get("id") or r.get("memory_id") or ""
+        memory = r.get("memory") or ""
+        mem_id = r.get("id") or ""
         parts = ["[green]+[/][dim]Added[/]"]
         if memory:
             parts.append(f"[white]{memory}[/]")
@@ -295,7 +389,10 @@ def format_feedback_result(console: Console, result: dict, output: str = "text")
         format_json(console, result)
         return
 
-    feedback_content = result.get("feedback_content", "") or ""
+    raw_data = result.get("data", result) if isinstance(result, dict) else {}
+    feedback_content = ""
+    if isinstance(raw_data, dict):
+        feedback_content = raw_data.get("feedback_content", "") or result.get("feedback_content", "") or ""
     message = result.get("message", "") or result.get("msg", "")
 
     console.print()
@@ -317,7 +414,7 @@ def format_extract_result(console: Console, result: dict | list, output: str = "
     if output == "quiet":
         return
 
-    results = result if isinstance(result, list) else result.get("results", [result])
+    results = extract_memory_records_from_response(result, detail="simple")
 
     if not results:
         console.print("  [dim]No memories extracted.[/]")
@@ -326,29 +423,12 @@ def format_extract_result(console: Console, result: dict | list, output: str = "
     console.print()
 
     for r in results:
-        memory = r.get("memory") or r.get("text") or ""
+        memory = r.get("memory") or ""
         parts = ["[cyan]~[/][dim]Extracted [/]"]
         if memory:
             parts.append(f"[white]{memory}[/]")
         console.print("  ".join(parts))
 
-    console.print()
-    
-    for r in results:
-        memory = r.get("memory") or r.get("text") or ""
-        mem_id = r.get("id") or r.get("memory_id") or ""
-        
-        icon = "[green]+[/]"
-        label = "Added"
-        
-        parts = [f"{icon}[dim]{label:<10}[/]"]
-        if memory:
-            parts.append(f"[white]{memory}[/]")
-        if mem_id:
-            parts.append(f"[dim]({mem_id})[/]")
-        
-        console.print("  ".join(parts))
-    
     console.print()
 
 
@@ -358,7 +438,19 @@ def format_chat_result(console: Console, result: dict, output: str = "text") -> 
         format_json(console, result)
         return
 
-    answer = result.get("answer", "")
+    answer = (
+        result.get("answer")
+        or result.get("response")
+        or (result.get("data") if isinstance(result.get("data"), str) else "")
+    )
+    if not answer and isinstance(result.get("data"), dict):
+        data_block = result["data"]
+        answer = (
+            data_block.get("answer")
+            or data_block.get("response")
+            or data_block.get("content")
+            or ""
+        )
     if answer:
         console.print()
         console.print(answer)
@@ -585,7 +677,7 @@ def format_agent_envelope(
     detail: str = "simple",
     records_preformatted: bool = False,
 ):
-    """Output structured JSON envelope for agent mode."""
+    """Output only the aggregated context block content for agent mode."""
     identity = {k: v for k, v in (scope or {}).items() if v}
     warnings: list[str] = []
     payload_data = _build_agent_payload(
@@ -596,25 +688,15 @@ def format_agent_envelope(
         records_preformatted=records_preformatted,
         warnings=warnings,
     )
-
-    envelope: dict[str, Any] = {
-        "status": "success",
-        "command": command,
-        "format": "agent",
-    }
-
-    if duration_ms is not None:
-        envelope["duration_ms"] = duration_ms
-
-    if identity:
-        envelope["identity"] = identity
-
-    if count is not None:
-        envelope["count"] = count
-
-    envelope["data"] = payload_data
-
-    console.print_json(json.dumps(envelope, default=str))
+    context_block = payload_data.get("context_block")
+    if context_block is None:
+        context_block = _build_generic_agent_context(
+            command=command,
+            data=payload_data,
+            identity=identity,
+            detail=detail,
+        )
+    console.print(context_block)
 
 
 def _build_agent_payload(
@@ -638,6 +720,7 @@ def _build_agent_payload(
     if command in {"add", "extract"}:
         results = _extract_memory_result_records(data, detail=detail)
         payload: dict[str, Any] = {
+            "context_block": _build_result_context("add", results, detail=detail),
             "results": results,
             "count": len(results),
             "warnings": warnings,
@@ -650,6 +733,7 @@ def _build_agent_payload(
 
     if command == "feedback":
         payload = {
+            "context_block": _build_result_context("feedback", [data], detail=detail),
             "feedback_content": data.get("feedback_content", ""),
             "warnings": warnings,
         }
@@ -661,6 +745,7 @@ def _build_agent_payload(
 
     if command == "chat":
         payload = {
+            "context_block": _build_chat_context(data, identity=identity, detail=detail),
             "answer": data.get("answer", ""),
             "warnings": warnings,
         }
@@ -687,6 +772,7 @@ def _build_agent_payload(
             ]
             return {"results": compact, "count": len(compact), "warnings": warnings}
         return {
+            "context_block": _build_rerank_context(results, query=data.get("query"), detail=detail),
             "query": data.get("query"),
             "model": data.get("model"),
             "results": results,
@@ -694,7 +780,7 @@ def _build_agent_payload(
             "warnings": warnings,
         }
 
-    return {"result": data, "warnings": warnings}
+    return {"context_block": _build_generic_agent_context(command=command, data=data, identity=identity, detail=detail), "result": data, "warnings": warnings}
 
 
 def _extract_memory_result_records(data: dict[str, Any], *, detail: str) -> list[dict[str, Any]]:
@@ -854,3 +940,66 @@ def _estimate_tokens(records: list[dict[str, Any]], *, detail: str) -> int:
     text = json.dumps(records, ensure_ascii=False)
     factor = 0.9 if detail == "simple" else 1.2
     return max(1, int(len(text) / 4 * factor))
+
+
+def _build_result_context(command: str, results: list[dict[str, Any]], *, detail: str) -> str:
+    lines = [f"<{command}_result>"]
+    if not results:
+        lines.append("No result.")
+    for item in results:
+        if isinstance(item, dict):
+            if item.get("memory"):
+                lines.append(f"content: {item['memory']}")
+            if detail == "detail" and item.get("metadata"):
+                for key, value in item["metadata"].items():
+                    lines.append(f"{key}: {value}")
+    lines.append(f"</{command}_result>")
+    return "\n".join(lines)
+
+
+def _build_chat_context(data: dict[str, Any], *, identity: dict[str, Any], detail: str) -> str:
+    lines = ["<chat_result>"]
+    if identity:
+        for key, value in identity.items():
+            lines.append(f"{key}: {value}")
+    if data.get("answer"):
+        lines.append(f"answer: {data['answer']}")
+    if detail == "detail":
+        for item in data.get("memorys", []) or []:
+            text = item.get("memory") or item.get("text") or ""
+            if text:
+                lines.append(f"memory: {text}")
+    lines.append("</chat_result>")
+    return "\n".join(lines)
+
+
+def _build_rerank_context(results: list[dict[str, Any]], *, query: str | None, detail: str) -> str:
+    lines = ["<rerank_result>"]
+    if query:
+        lines.append(f"query: {query}")
+    for item in results:
+        text = item.get("text") or item.get("document", {}).get("text") or ""
+        score = item.get("relevance_score", item.get("score"))
+        if text:
+            if detail == "detail" and score is not None:
+                lines.append(f"score: {_format_score(score)} | document: {text}")
+            else:
+                lines.append(f"document: {text}")
+    lines.append("</rerank_result>")
+    return "\n".join(lines)
+
+
+def _build_generic_agent_context(command: str, data: Any, *, identity: dict[str, Any], detail: str) -> str:
+    lines = [f"<{command}_context>"]
+    if identity:
+        for key, value in identity.items():
+            lines.append(f"{key}: {value}")
+    if isinstance(data, dict):
+        for key, value in data.items():
+            if key == "context":
+                continue
+            lines.append(f"{key}: {value}")
+    else:
+        lines.append(str(data))
+    lines.append(f"</{command}_context>")
+    return "\n".join(lines)

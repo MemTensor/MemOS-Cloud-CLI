@@ -13,30 +13,19 @@ Never do:
 Command:
 
 ```bash
-memos extract -m "<text>"
-```
-
-Also supports:
-
-```bash
 memos extract "<text>"
 ```
 
 Common flags:
 
 - `-m, --message`
-- `--type`
 - `--user-id`
-- `--agent-id`
-- `--app-id`
-- `--run-id`
-- `--conversation-id`
 - `--format json|agent`
 
 Example:
 
 ```bash
-memos extract --format json -m "User likes coffee and prefers dark mode" --type memory --type preference --user-id user_123 --conversation-id conv_456
+memos extract "User likes coffee and prefers dark mode" --user-id user_123 --format json
 ```
 
 Working rules:

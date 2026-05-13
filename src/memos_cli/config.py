@@ -14,13 +14,13 @@ class PlatformConfig(BaseModel):
     """Platform API configuration."""
     api_key: str = ""
     base_url: str = "https://memos.memtensor.cn/api/openmem/v1"
-    user_email: str | None = None
 
 
 class DefaultsConfig(BaseModel):
     """Default entity IDs."""
     user_id: str | None = DEFAULT_USER_ID
     conversation_id: str | None = DEFAULT_CONVERSATION_ID
+    framework: str | None = None
     agent_id: str | None = None
     app_id: str | None = None
     run_id: str | None = None
@@ -60,6 +60,8 @@ def load_config() -> MemOSConfig:
         config.defaults.user_id = user_id
     if conversation_id := os.getenv("MEMOS_CONVERSATION_ID"):
         config.defaults.conversation_id = conversation_id
+    if framework := os.getenv("MEMOS_FRAMEWORK"):
+        config.defaults.framework = framework
     if agent_id := os.getenv("MEMOS_AGENT_ID"):
         config.defaults.agent_id = agent_id
     if app_id := os.getenv("MEMOS_APP_ID"):

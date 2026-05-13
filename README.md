@@ -21,15 +21,17 @@ MemOS-CLI/
 │   └── commands/            # CLI commands
 │       ├── init.py          # memos init
 │       ├── config_cmd.py    # memos config (show/get/set)
-│       ├── kb.py            # kb create / file add
-│       └── memory.py        # add/search/list/chat/get/delete
+│       └── memory.py        # add/search/get/delete/extract/rerank/feedback/chat
 ├── skills/
-│   ├── memos-shared/        # Shared config and runtime rules
-│   ├── memos-config/        # Config and initialization skill
 │   ├── memos-memory/        # Memory domain skill (P0 commands)
-│   ├── memos-kb/            # Knowledge base domain skill
-│   ├── memos-memory-agent/  # Automated recall/capture workflow
-│   └── memory_skill.md      # Backward-compatible pointer
+│   │   ├── SKILL.md         # Skill entry and usage protocol
+│   │   └── references/      # Skill reference docs
+│   │       ├── memos-add.md
+│   │       ├── memos-chat.md
+│   │       ├── memos-delete.md
+│   │       ├── memos-extract.md
+│   │       ├── memos-get.md
+│   │       └── memos-search.md
 ├── pyproject.toml
 └── README.md
 ```
@@ -45,81 +47,221 @@ pip install -e .
 ### 1. Initialize
 
 ```bash
-memos init
+memos init --agent codex
 ```
+
+This command installs the bundled MemOS operation skill to the explicitly selected agent skills directory.
+`--agent` is required, and installation to a generic global directory is not supported.
+It also installs shell completion automatically for the current shell when shell detection succeeds.
+
+Supported targets:
+- `--agent codex` → `~/.codex/skills/memos/`
+- `--agent cursor` → `~/.cursor/skills/memos/`
+- `--agent claude` → `~/.claude/skills/memos/`
+- `--agent openclaw` → `~/.openclaw/skills/memos/`
+- `--agent hermes` → `~/.hermes/skills/memos/`
 
 Or with arguments:
 
 ```bash
-memos init --api-key YOUR_API_KEY --base-url https://memos.memtensor.cn/api/openmem/v1
+memos init --api-key YOUR_API_KEY --agent codex
 ```
 
 ### 2. Add Memory
 
 ```bash
-memos add -m "User likes Python programming"
+memos add "User likes Python programming"
 ```
 
 ### 3. Search Memories
 
 ```bash
-memos search -q "programming languages"
+memos search "programming languages"
 ```
 
-### 4. List Memories
-
-```bash
-memos list
-```
-
-### 5. Chat with MemOS
+### 4. Chat with MemOS
 
 ```bash
 memos chat "What do you know about my preferences?"
 ```
 
-### 6. Get Memory by ID
+### 5. Get Memories
 
 ```bash
-memos get mem_123456
+memos get user_123
 ```
 
-### 7. Delete Memory
+### 6. Delete Memory
 
 ```bash
 memos delete mem_123456
 ```
 
-### 8. Create Knowledge Base
+## Command Reference
+
+### `memos add`
+
+Write a memory into MemOS using simple text input.
+
+Example:
 
 ```bash
-memos kb create "Project Docs" --description "Internal knowledge base"
+memos add "User likes Python programming"
 ```
 
-### 9. Add Documents to a Knowledge Base
+Parameters:
+
+- `[MESSAGE]`: Memory content to add; required; use `[MESSAGE]` or `--message`.
+- `-m, --message`: Memory content to add; optional; alias of `[MESSAGE]`; no separate default.
+- `--user-id`: User scope for the memory write; optional; defaults to configured `defaults.user_id`.
+
+### `memos search`
+
+Search memories with semantic retrieval and optional preference/tool/skill expansion.
+
+Example:
 
 ```bash
-memos kb file add kb_123 https://example.com/doc-a.pdf https://example.com/doc-b.pdf
+memos search "programming languages" --user-id user_123 --format table --detail simple
 ```
+
+Parameters:
+
+- `[QUERY]`: Search query text; required; use `[QUERY]` or `--query`.
+- `-q, --query`: Search query text; optional; alias of `[QUERY]`; no separate default.
+- `--user-id`: User scope for retrieval; optional; defaults to configured `defaults.user_id`.
+- `--memory-limit-number`: Main memory recall count; optional; defaults to `9`.
+- `--include-preference`: Whether to include preference memory; optional; accepts `true` or `false`; defaults to `true` when omitted.
+- `--preference-limit-number`: Preference memory recall count; optional; defaults to `9`.
+- `--include-tool-memory`: Whether to include tool memory; optional; accepts `true` or `false`; defaults to `false` when omitted.
+- `--tool-memory-limit-number`: Tool memory recall count; optional; defaults to `6`.
+- `--include-skill-memory`: Whether to include skill memory; optional; accepts `true` or `false`; defaults to `false` when omitted.
+- `--skill-memory-limit-number`: Skill memory recall count; optional; defaults to `6`.
+- `--relativity`: Retrieval threshold; not exposed in the current CLI; API default is `0.45`.
+- `--format`: Output format; optional; defaults to `table`.
+- `--detail`: Output detail level for non-JSON formats; optional; defaults to `simple`; supported values: `simple`, `detail`.
+
+### `memos get`
+
+Call the documented `get_memory` API to retrieve memories for a user.
+
+Example:
+
+```bash
+memos get user_123 --format json --detail detail
+```
+
+Parameters:
+
+- `[USER_ID]`: Retrieval scope; effectively required, but if omitted the CLI falls back to configured `defaults.user_id`.
+- `--user-id`: Alias of `[USER_ID]`; optional; same fallback as `[USER_ID]`.
+- `--page`: Page number; optional; API default is `1` when omitted.
+- `--size`: Number of items returned per memory category on the current page; optional; API default is `10` when omitted.
+- `--include-preference`: Whether to include preference memory; optional; accepts `true` or `false`; defaults to `true` when omitted.
+- `--include-tool-memory`: Whether to include tool memory; optional; accepts `true` or `false`; current CLI exposes this flag, but the official `get_memory` docs do not state the API default when omitted.
+- `--format`: Output format; optional; defaults to `table`.
+- `--detail`: Output detail level for non-JSON formats; optional; defaults to `simple`; supported values: `simple`, `detail`.
+
+### `memos delete`
+
+Delete one memory, or delete all memories for a user, using the documented delete API.
+
+Example:
+
+```bash
+memos delete mem_123456 --format json
+memos delete --user-id user_123 --format json
+```
+
+Parameters:
+
+- `MEMORY_ID`: Memory ID to delete; conditionally required; use `MEMORY_ID` to delete one memory.
+- `--user-id`: Delete all memories for the given user ID; conditionally required; use `--user-id` to delete all memories for a user.
+
+### `memos extract`
+
+Preview memory candidates from messages without storing them.
+
+Example:
+
+```bash
+memos extract "User likes coffee and prefers dark mode" --format json
+```
+
+Parameters:
+
+- `[MESSAGE]`: Message content to extract from; required; use `[MESSAGE]` or `--message`.
+- `-m, --message`: Message content to extract from; optional; alias of `[MESSAGE]`; no separate default.
+- `--user-id`: User scope; optional; defaults to configured `defaults.user_id`.
+
+### `memos rerank`
+
+Rerank candidate documents for a query.
+
+Example:
+
+```bash
+memos rerank "python backend" "Flask guide" "React guide" --format json
+```
+
+Parameters:
+
+- `[QUERY]`: Query used for reranking; required; use `[QUERY]` or `--query`.
+- `[DOCUMENTS]...`: Candidate documents; required; provide one or more documents as positional arguments, repeated `--documents`, or stdin.
+- `-q, --query`: Query used for reranking; optional; alias of `[QUERY]`; no separate default.
+- `--documents`: Candidate document, repeatable; optional; repeatable alternative to positional `[DOCUMENTS]...`.
+- `--top-n`: Return only the top N results; optional; no CLI default; omitted from the request unless provided.
+- `--format`: Output format; optional; defaults to `table`.
+
+### `memos feedback`
+
+Submit feedback content to MemOS.
+
+Example:
+
+```bash
+memos feedback "Prefer concise technical answers." --user-id user_123 --format json
+```
+
+Parameters:
+
+- `[FEEDBACK_TEXT]`: Feedback content to submit; required; use `[FEEDBACK_TEXT]` or `--feedback-content`.
+- `--feedback-content`: Feedback content to submit; optional; alias of `[FEEDBACK_TEXT]`; no separate default.
+- `--user-id`: User scope; optional; defaults to configured `defaults.user_id`.
+
+### `memos chat`
+
+Ask MemOS for a memory-informed answer using the documented chat request fields.
+
+Example:
+
+```bash
+memos chat "What do you know about my preferences?" --user-id user_123 --format agent
+```
+
+Parameters:
+
+- `[QUERY]`: Chat query text; required; use `[QUERY]` or `--query`.
+- `-q, --query`: Chat query text; optional; alias of `[QUERY]`; no separate default.
+- `--user-id`: User scope; optional; defaults to configured `defaults.user_id`.
 
 ## Output Modes
 
-Each subcommand supports trailing `--format`. Only `search`, `list`, and `get` also support trailing `--detail`:
+Each subcommand supports trailing `--format`. Only `search` and `get` also support trailing `--detail`:
 
 ```bash
-memos search -q "python" --format table --detail simple
-memos search -q "python" --format markdown --detail detail
-memos search -q "python" --format agent --detail simple
-memos search -q "python" --format json --detail detail
-memos list --user-id user_123 --format table --detail simple
-memos get mem_123456 --format json --detail detail
-memos add -m "User prefers TypeScript" --format json
+memos search "python" --format table --detail simple
+memos search "python" --format markdown --detail detail
+memos search "python" --format agent --detail simple
+memos search "python" --format json --detail detail
+memos get user_123 --format json --detail detail
+memos add "User prefers TypeScript" --format json
 ```
 
 ## Global Options
 
 - `--api-key KEY`: Override API key from config
-- `--base-url URL`: Override base URL from config
+- `--base-url URL`: Override API base URL from config
 - `--version`: Show version
 
 ## Configuration
@@ -129,6 +271,13 @@ View current config:
 ```bash
 memos config show
 ```
+
+Example output includes:
+- `API Key`
+- `Base URL`
+- `Source`
+- `Framework`
+- default `User ID` and `Conversation ID`
 
 Get/Set specific values:
 
@@ -141,32 +290,34 @@ memos config set defaults.user_id user123
 
 - `MEMOS_API_KEY`: Your API key
 - `MEMOS_BASE_URL`: API base URL (default: https://memos.memtensor.cn/api/openmem/v1)
+- `MEMOS_FRAMEWORK`: Override framework attribution (for example `codex`)
 
 ## Agent Integration
 
-Use the provided skills to enable automatic memory management in your agent framework.
+Use the provided skill to enable memory operations in your agent framework.
 
-Use these skills when:
-- you need shared setup, identity, and per-command output conventions such as trailing `--format`, plus trailing `--detail` for `search`/`list`/`get`: `skills/memos-shared/SKILL.md`
-- you need configuration and initialization commands: `skills/memos-config/SKILL.md`
-- you need memory operations such as `extract`, `add`, `search`, `list`, `chat`, `get`, and `delete`: `skills/memos-memory/SKILL.md`
-- you need knowledge base operations: `skills/memos-kb/SKILL.md`
-- you need the default agent workflow for retrieve-before-respond and store-after-respond: `skills/memos-memory-agent/SKILL.md`
+Use this skill when:
+- you need memory operations such as `extract`, `add`, `search`, `chat`, `get`, and `delete`: `skills/memos-memory/SKILL.md`
 
-Recommended entry points:
-1. Start with `skills/memos-memory-agent/SKILL.md` for automated agent workflows.
-2. Start with `skills/memos-shared/SKILL.md` if setup or runtime conventions come first.
+Recommended entry point:
+1. Start with `skills/memos-memory/SKILL.md`.
 
 ## Telemetry & Source Tracking
 
 All CLI requests include:
-- `source=cli` header
+- `source=cli-<framework>` header when the framework can be identified, for example `source=cli-codex`
 - Framework detection (OpenClaw, Hermes, etc.)
 
 Memory API requests also attach framework metadata when it can be detected from
 environment variables or the parent process.
 
 This enables usage analytics and framework-specific optimizations.
+
+Framework detection is resolved in this order:
+- runtime override
+- saved config value from `memos init --agent ...`
+- `MEMOS_FRAMEWORK`
+- shell / parent-process inference
 
 ## Development
 
@@ -184,4 +335,4 @@ python -m memos_cli --help
 
 ## License
 
-MIT
+[Apache 2.0 License.](https://github.com/lijicode/MemOS/blob/main/LICENSE)
