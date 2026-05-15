@@ -8,7 +8,7 @@ Use this command when:
 Never do:
 - treat extracted candidates as already persisted;
 - feed long noisy multi-turn transcripts without first compressing them into core facts;
-- store results blindly without checking relevance.
+- store results blindly without checking whether they actually match the user's current context.
 
 Command:
 

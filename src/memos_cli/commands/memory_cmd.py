@@ -174,7 +174,7 @@ def parse_json_option(raw: str | None, *, option_name: str) -> Any | None:
 
 def resolve_output_format(output_format: str | None) -> str:
     """Resolve output format from the command option only."""
-    final_output = (output_format or "table").strip().lower()
+    final_output = (output_format or "agent").strip().lower()
     if final_output not in VALID_OUTPUT_FORMATS:
         console.print(f"[red]Error:[/] Invalid --format: {output_format}")
         raise typer.Exit(1)

@@ -81,6 +81,11 @@ def _install_bundled_skills(agent: str) -> Path:
     return memos_target
 
 
+def _guidance_template_path() -> Path:
+    """Return the bundled AGENTS/CLAUDE guidance template path."""
+    return Path(__file__).resolve().parents[1] / "templates" / "agent_guidance.md"
+
+
 def _resolve_guidance_file(agent: str) -> Path:
     """Resolve the global guidance file path for the target agent."""
     skills_root = _resolve_skills_dir(agent)
@@ -92,40 +97,20 @@ def _resolve_guidance_file(agent: str) -> Path:
 
 
 def _build_agent_guidance(agent: str) -> str:
-    """Build agent-specific MemOS CLI guidance content."""
+    """Build agent-specific MemOS CLI guidance content from template."""
     normalized = agent.strip().lower()
-    lines = [
-        GUIDANCE_START,
-        "## MemOS CLI",
-        "",
-        "Use MemOS CLI in every conversation.",
-        "",
-        "Rules:",
-        "- In every conversation, run MemOS search before answering.",
-        "- In every conversation, run MemOS add after answering.",
-        "- If search or add returns insufficient information, rewrite the query and try again.",
-        "- If plugin-injected context already contains enough information for this turn, review that result first before deciding how to proceed.",
-    ]
+    plugin_rules = ""
     if normalized in {"openclaw", "hermes"}:
-        lines.extend(
+        plugin_rules = "\n".join(
             [
                 f"- For {normalized}, check the plugin list first.",
                 "- If a plugin name contains `memos`, do not call MemOS search or add manually, because the plugin already handles automatic search and add.",
                 "- If no plugin name contains `memos`, follow the normal flow: search first, answer, then add.",
             ]
         )
-    lines.extend(
-        [
-            "",
-            "Recommended command flow:",
-            "1. Search: `memos search \"<rewritten query if needed>\" --format agent --detail simple`",
-            "2. Answer using the retrieved memory context.",
-            "3. Add: `memos add \"<durable fact from this turn>\" --format agent`",
-            GUIDANCE_END,
-            "",
-        ]
-    )
-    return "\n".join(lines)
+    template = _guidance_template_path().read_text()
+    content = template.replace("{{plugin_rules}}", plugin_rules).rstrip()
+    return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
 
 
 def _upsert_guidance_block(path: Path, content: str) -> None:

@@ -33,10 +33,33 @@ MemOS-CLI/
 │   │       ├── memos-get.md
 │   │       └── memos-search.md
 ├── pyproject.toml
+├── package.json
+├── bin/
+│   └── memos.js            # npm launcher
+├── scripts/
+│   └── postinstall.js      # npm binary installer
+├── npm/
+│   └── README.md           # npm binary payload directory
 └── README.md
 ```
 
 ## Installation
+
+### End Users
+
+```bash
+npm install -g @memos/cli
+```
+
+The npm package downloads a prebuilt MemOS CLI binary for the current platform during installation, so end users do not need a local Python environment.
+
+Expected binary targets:
+- `darwin-arm64`
+- `darwin-x64`
+- `linux-x64`
+- `windows-x64`
+
+### Development
 
 ```bash
 pip install -e .
@@ -144,7 +167,7 @@ Parameters:
 - `--include-skill-memory`: Whether to include skill memory; optional; accepts `true` or `false`; defaults to `false` when omitted.
 - `--skill-memory-limit-number`: Skill memory recall count; optional; defaults to `6`.
 - `--relativity`: Retrieval threshold; not exposed in the current CLI; API default is `0.45`.
-- `--format`: Output format; optional; defaults to `table`.
+- `--format`: Output format; optional; defaults to `agent`.
 - `--detail`: Output detail level for non-JSON formats; optional; defaults to `simple`; supported values: `simple`, `detail`.
 
 ### `memos get`
@@ -165,7 +188,7 @@ Parameters:
 - `--size`: Number of items returned per memory category on the current page; optional; API default is `10` when omitted.
 - `--include-preference`: Whether to include preference memory; optional; accepts `true` or `false`; defaults to `true` when omitted.
 - `--include-tool-memory`: Whether to include tool memory; optional; accepts `true` or `false`; current CLI exposes this flag, but the official `get_memory` docs do not state the API default when omitted.
-- `--format`: Output format; optional; defaults to `table`.
+- `--format`: Output format; optional; defaults to `agent`.
 - `--detail`: Output detail level for non-JSON formats; optional; defaults to `simple`; supported values: `simple`, `detail`.
 
 ### `memos delete`
@@ -201,7 +224,7 @@ memos origin mem_123456 --format json
 Parameters:
 
 - `[MEMORY_ID]`: Memory ID; required.
-- `--format`: Output format; optional; defaults to `table`.
+- `--format`: Output format; optional; defaults to `agent`.
 - `--detail`: Output detail level; optional; defaults to `simple`; supported values: `simple`, `detail`.
 
 Default display includes:
@@ -243,7 +266,7 @@ Parameters:
 - `-q, --query`: Query used for reranking; optional; alias of `[QUERY]`; no separate default.
 - `--documents`: Candidate document, repeatable; optional; repeatable alternative to positional `[DOCUMENTS]...`.
 - `--top-n`: Return only the top N results; optional; no CLI default; omitted from the request unless provided.
-- `--format`: Output format; optional; defaults to `table`.
+- `--format`: Output format; optional; defaults to `agent`.
 
 ### `memos feedback`
 

@@ -33,10 +33,33 @@ MemOS-CLI/
 │   │       ├── memos-get.md
 │   │       └── memos-search.md
 ├── pyproject.toml
+├── package.json
+├── bin/
+│   └── memos.js            # npm 启动入口
+├── scripts/
+│   └── postinstall.js      # npm 二进制安装脚本
+├── npm/
+│   └── README.md           # npm 二进制载荷目录
 └── README.md
 ```
 
 ## 安装
+
+### 面向最终用户
+
+```bash
+npm install -g @memos/cli
+```
+
+npm 包会在安装时为当前平台下载预编译的 MemOS CLI 二进制，因此最终用户不需要本地 Python 运行环境。
+
+建议提供的二进制目标：
+- `darwin-arm64`
+- `darwin-x64`
+- `linux-x64`
+- `windows-x64`
+
+### 面向开发
 
 ```bash
 pip install -e .
@@ -144,7 +167,7 @@ memos search "编程语言偏好" --user-id user_123 --format table --detail sim
 - `--include-skill-memory`：是否召回技能记忆；可选；接受 `true` 或 `false`；不传时默认 `false`。
 - `--skill-memory-limit-number`：技能记忆召回条数；可选；默认值为 `6`。
 - `--relativity`：召回阈值；当前 CLI 未暴露；接口默认值为 `0.45`。
-- `--format`：输出格式；可选；默认值为 `table`。
+- `--format`：输出格式；可选；默认值为 `agent`。
 - `--detail`：非 JSON 输出的详略级别；可选；默认值为 `simple`；支持 `simple`、`detail`。
 
 ### `memos get`
@@ -165,7 +188,7 @@ memos get user_123 --format json --detail detail
 - `--size`：指定每一类记忆在当前页返回的条目数量；可选；不传时接口默认值为 `10`。
 - `--include-preference`：是否召回偏好记忆；可选；接受 `true` 或 `false`；不传时默认 `true`。
 - `--include-tool-memory`：是否召回工具记忆；可选；接受 `true` 或 `false`；当前 CLI 已暴露该参数，但官方 `get_memory` 文档未说明不传时的接口默认值。
-- `--format`：输出格式；可选；默认值为 `table`。
+- `--format`：输出格式；可选；默认值为 `agent`。
 - `--detail`：非 JSON 输出的详略级别；可选；默认值为 `simple`；支持 `simple`、`detail`。
 
 ### `memos delete`
@@ -201,7 +224,7 @@ memos origin mem_123456 --format json
 参数说明：
 
 - `[MEMORY_ID]`：记忆 ID；必填。
-- `--format`：输出格式；可选；默认值为 `table`。
+- `--format`：输出格式；可选；默认值为 `agent`。
 - `--detail`：输出详略级别；可选；默认值为 `simple`；支持 `simple`、`detail`。
 
 默认展示内容包括：
@@ -243,7 +266,7 @@ memos rerank "python 后端" "Flask guide" "React guide" --format json
 - `-q, --query`：重排查询；可选；`[QUERY]` 的别名；无单独默认值。
 - `--documents`：候选文档文本；可选；可重复传入。
 - `--top-n`：只返回前 N 条；可选；CLI 不设置默认值；不传则请求体不带该字段。
-- `--format`：输出格式；可选；默认值为 `table`。
+- `--format`：输出格式；可选；默认值为 `agent`。
 
 ### `memos feedback`
 

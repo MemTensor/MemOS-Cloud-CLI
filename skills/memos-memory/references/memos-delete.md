@@ -8,7 +8,7 @@ Use this command when:
 Never do:
 - guess `memory_id`;
 - delete based on a vague description without first checking the exact record;
-- remove memories just because they are low confidence unless the user or evidence confirms they are wrong.
+- remove memories just because they look uncertain unless the user or evidence confirms they are wrong.
 
 Command:
 
