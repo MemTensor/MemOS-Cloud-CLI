@@ -31,6 +31,7 @@ if (!downloadUrl) {
 
 download(downloadUrl, archivePath)
   .then(() => extractArchive(archivePath, installDir))
+  .then(() => clearQuarantine(path.join(installDir, binaryName)))
   .then(() => makeExecutable(path.join(installDir, binaryName)))
   .catch((error) => {
     console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
@@ -106,4 +107,19 @@ function makeExecutable(filePath) {
   if (process.platform !== "win32" && fs.existsSync(filePath)) {
     fs.chmodSync(filePath, 0o755);
   }
+}
+
+function clearQuarantine(filePath) {
+  if (process.platform !== "darwin") {
+    return Promise.resolve();
+  }
+
+  return new Promise((resolve) => {
+    const child = spawn("xattr", ["-dr", "com.apple.quarantine", filePath], {
+      stdio: "ignore",
+    });
+
+    child.on("exit", () => resolve());
+    child.on("error", () => resolve());
+  });
 }
