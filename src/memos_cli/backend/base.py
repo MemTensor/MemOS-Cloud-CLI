@@ -47,41 +47,6 @@ class BackendBase(ABC):
     def chat(self, query: str, **kwargs) -> dict[str, Any]:
         """Chat with MemOS."""
         pass
-
-    @abstractmethod
-    def create_knowledgebase(self, name: str, description: str | None = None, **kwargs) -> dict[str, Any]:
-        """Create a knowledge base."""
-        pass
-
-    @abstractmethod
-    def list_knowledgebases(self, **kwargs) -> list[dict[str, Any]]:
-        """List knowledge bases."""
-        pass
-
-    @abstractmethod
-    def add_knowledgebase_files(self, knowledgebase_id: str, files: list[dict[str, Any]], **kwargs) -> dict[str, Any]:
-        """Add files to a knowledge base."""
-        pass
-
-    @abstractmethod
-    def get_knowledgebase_file(self, file_id: str, **kwargs) -> dict[str, Any]:
-        """Get a knowledge base file/document."""
-        pass
-
-    @abstractmethod
-    def delete_knowledgebase_files(
-        self,
-        file_ids: list[str],
-        knowledgebase_id: str | None = None,
-        **kwargs,
-    ) -> dict[str, Any]:
-        """Delete files from a knowledge base."""
-        pass
-
-    @abstractmethod
-    def delete_knowledgebase(self, knowledgebase_id: str, **kwargs) -> dict[str, Any]:
-        """Delete a knowledge base."""
-        pass
     
     @abstractmethod
     def get_memory(self, memory_id: str) -> dict[str, Any]:

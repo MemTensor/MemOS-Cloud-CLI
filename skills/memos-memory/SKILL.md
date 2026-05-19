@@ -37,10 +37,14 @@ Choose commands by intent:
 
 Working rules:
 - do not mechanically copy entire messages into search queries; compress them into entities, preferences, and intent;
+- when `--format` is omitted, treat the default as `agent`;
 - append `--format json` at the end of the command whenever a later step needs exact `memory_id` or structured records;
 - append `--format agent` at the end of the command when the result will be injected back into model context;
 - keep `--format` at the end of every command line, and keep `--detail` at the end only for `search` and `get`;
-- initialize MemOS CLI with `memos init` before using memory commands in a fresh environment;
+- do not run `memos init` as a default preflight step if MemOS CLI is already installed;
+- only run `memos init --agent <current_agent>` when the CLI is missing and the user has explicitly provided an API key or asked to initialize MemOS;
+- if initialization is needed but no API key is available, ask the user for the key instead of stopping the workflow;
+- the active agent should initialize itself with its own `--agent` value, not a hardcoded different agent name;
 - prefer stable identity fields such as `--user-id` when available;
 - read result counts from `count` and structured payloads from `data`;
 - if you already have `memory_id`, do not search first just to guess.

@@ -48,23 +48,22 @@ MemOS-CLI/
 ### 面向最终用户
 
 ```bash
-npm install -g @memos/cli
+npm install -g @memtensor/memos-cloud-cli@beta
 ```
 
 npm 包会在安装时为当前平台下载预编译的 MemOS CLI 二进制，因此最终用户不需要本地 Python 运行环境。
 
-建议提供的二进制目标：
-- `darwin-arm64`
-- `darwin-x64`
-- `linux-x64`
-- `windows-x64`
+## 卸载
+
+```bash
+npm uninstall -g @memtensor/memos-cloud-cli
+```
 
 ### 面向开发
 
 ```bash
 pip install -e .
 ```
-
 ## 快速开始
 
 ### 1. 初始化

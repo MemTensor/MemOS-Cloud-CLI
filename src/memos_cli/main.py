@@ -133,5 +133,6 @@ app.command(rich_help_panel="Advanced")(rerank)
 app.command(rich_help_panel="Advanced")(chat)
 
 
+
 if __name__ == "__main__":
     app()

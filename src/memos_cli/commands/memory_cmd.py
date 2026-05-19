@@ -258,7 +258,7 @@ def cmd_add(
         format_agent_envelope(
             console,
             command="add",
-            data=extract_memory_records_from_response(result, detail=final_detail),
+            data=result,
             duration_ms=duration_ms,
             scope={**scope, "conversation_id": final_conversation_id},
             detail=final_detail,

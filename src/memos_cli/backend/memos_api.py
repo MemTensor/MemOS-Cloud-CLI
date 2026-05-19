@@ -52,30 +52,6 @@ class MemOSBackend(BackendBase):
         """Chat with MemOS."""
         return self.memory_api.chat(query, **kwargs)
 
-    def create_knowledgebase(self, name: str, description: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        """Create a knowledge base."""
-        return self.memory_api.create_knowledgebase(name, description=description, **kwargs)
-
-    def list_knowledgebases(self, **kwargs: Any) -> list[dict[str, Any]]:
-        """List knowledge bases."""
-        return self.memory_api.list_knowledgebases(**kwargs)
-
-    def add_knowledgebase_files(self, knowledgebase_id: str, files: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        """Add files to a knowledge base."""
-        return self.memory_api.add_knowledgebase_files(knowledgebase_id, files, **kwargs)
-
-    def get_knowledgebase_file(self, file_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Get a knowledge base file/document."""
-        return self.memory_api.get_knowledgebase_file(file_id, **kwargs)
-
-    def delete_knowledgebase_files(self, file_ids: list[str], knowledgebase_id: str | None = None, **kwargs: Any) -> dict[str, Any]:
-        """Delete files from a knowledge base."""
-        return self.memory_api.delete_knowledgebase_files(file_ids or [], knowledgebase_id=knowledgebase_id, **kwargs)
-
-    def delete_knowledgebase(self, knowledgebase_id: str, **kwargs: Any) -> dict[str, Any]:
-        """Delete a knowledge base."""
-        return self.memory_api.delete_knowledgebase(knowledgebase_id, **kwargs)
-
     def get_memory(self, memory_id: str, **kwargs: Any) -> dict[str, Any]:
         """Get a specific memory."""
         return self.memory_api.get_memory(memory_id, **kwargs)

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import os
 import shutil
+import sys
 from pathlib import Path
 
 import typer
@@ -30,6 +31,14 @@ SUPPORTED_SKILL_AGENTS = {
     "openclaw": Path.home() / ".openclaw" / "skills",
     "hermes": Path.home() / ".hermes" / "skills",
 }
+
+
+def _bundle_root() -> Path:
+    """Return the runtime bundle root for source and PyInstaller builds."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(__file__).resolve().parents[3]
 
 
 def _detect_completion_shell() -> str | None:
@@ -60,8 +69,7 @@ def _resolve_skills_dir(agent: str) -> Path:
 
 def _install_bundled_skills(agent: str) -> Path:
     """Install bundled MemOS operation skill into the global skills directory."""
-    repo_root = Path(__file__).resolve().parents[3]
-    source_dir = repo_root / "skills"
+    source_dir = _bundle_root() / "skills"
     if not source_dir.exists():
         raise FileNotFoundError(f"Bundled skills directory not found: {source_dir}")
 
@@ -83,6 +91,9 @@ def _install_bundled_skills(agent: str) -> Path:
 
 def _guidance_template_path() -> Path:
     """Return the bundled AGENTS/CLAUDE guidance template path."""
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass) / "memos_cli" / "templates" / "agent_guidance.md"
     return Path(__file__).resolve().parents[1] / "templates" / "agent_guidance.md"
 
 
