@@ -7,7 +7,7 @@
     "memos": "bin/memos.js"
   },
   "files": [
-    "bin",
+    "bin/memos.js",
     "scripts"
   ],
   "engines": {

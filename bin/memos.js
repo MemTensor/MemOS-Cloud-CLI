@@ -7,7 +7,7 @@ const { existsSync } = require("node:fs");
 const path = require("node:path");
 
 const exeName = process.platform === "win32" ? "memos.exe" : "memos";
-const binaryPath = path.join(__dirname, "..", "npm", "bin", exeName);
+const binaryPath = path.join(__dirname, "..", "bin", exeName);
 
 if (!existsSync(binaryPath)) {
   console.error("MemOS CLI binary is not installed.");
