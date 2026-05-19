@@ -42,6 +42,10 @@ python -m PyInstaller --clean --noconfirm "${ROOT_DIR}/memos.spec"
 cp "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
 chmod +x "${STAGE_DIR}/memos"
 
+if [[ "${PLATFORM}" == "darwin" ]]; then
+  xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
+fi
+
 tar -czf "${ARCHIVE_PATH}" -C "${STAGE_DIR}" memos
 
 echo "Built binary: ${ROOT_DIR}/dist/memos"

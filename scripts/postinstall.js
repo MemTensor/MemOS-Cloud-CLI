@@ -16,15 +16,18 @@ if (process.env.MEMOS_INSTALL_SKIP_DOWNLOAD === "1" || process.env.MEMOS_INSTALL
 
 const target = resolveTarget();
 const assetName = `memos-${pkg.version}-${target}.tar.gz`;
-const downloadUrl =
-  process.env.MEMOS_BINARY_URL ||
-  `https://github.com/TangYH321/MemOS-CLI-npm/releases/download/v${pkg.version}/${assetName}`;
+const downloadUrl = process.env.MEMOS_BINARY_URL;
 
 const installDir = path.join(__dirname, "..", "npm", "bin");
 const archivePath = path.join(os.tmpdir(), assetName);
 const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
 
 fs.mkdirSync(installDir, { recursive: true });
+
+if (!downloadUrl) {
+  console.error("MEMOS_BINARY_URL is not set");
+  process.exit(1);
+}
 
 download(downloadUrl, archivePath)
   .then(() => extractArchive(archivePath, installDir))
