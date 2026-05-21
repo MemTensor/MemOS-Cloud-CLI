@@ -104,13 +104,9 @@ def _guidance_template_path() -> Path:
 
 
 def _resolve_guidance_file(agent: str) -> Path:
-    """Resolve the global guidance file path for the target agent."""
-    skills_root = _resolve_skills_dir(agent)
-    agent_home = skills_root.parent
-    normalized = agent.strip().lower()
-    if normalized == "claude":
-        return agent_home / "CLAUDE.md"
-    return agent_home / "AGENTS.md"
+    """Resolve the workspace guidance file path for the current project."""
+    _ = agent
+    return Path.cwd() / "AGENTS.md"
 
 
 def _build_agent_guidance(agent: str) -> str:
