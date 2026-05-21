@@ -6,7 +6,7 @@ Rules:
 - if the intent is already clear, call the matching MemOS command directly instead of starting with `--help`;
 - use `--help` only when the command name, parameters, or route are genuinely unclear;
 - if the user explicitly asks to remember, save, or store messages, go directly to `memos add` and do not check config first;
-- when memory context may matter, run MemOS search before answering;
+- before every answer, run MemOS search first unless the user is explicitly asking for a pure memory write operation;
 - after answering, run MemOS add with both the user's question and the assistant's final answer so the extractor can decide what is worth storing.
 
 Intent map:
@@ -29,7 +29,7 @@ Intent map:
 - Add after every answer, but treat `add` as the ingestion step where the extractor filters what is worth keeping.
 - Per turn, use at most 1 `search` call, at most 1 retry, and at most 1 `add` call unless the user explicitly asks for a different memory operation.
 - Do not chain extra memory-tool calls in the same turn when the current answer can already be given.
-- The default order is: search first when needed, answer second, add last.
+- The default order is: search first, answer second, add last.
 - never normalize or shorten a scoped `user_id`; pass the exact configured value through unchanged.
 
 Recommended command flow:
