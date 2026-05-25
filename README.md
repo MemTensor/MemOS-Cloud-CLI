@@ -73,8 +73,7 @@ npm uninstall -g @memtensor/memos-cloud-cli
 memos init --agent codex
 ```
 
-This command installs the bundled MemOS operation skill to the explicitly selected agent skills directory.
-It writes the MemOS guidance file to the current workspace as `AGENTS.md`.
+This command installs the bundled MemOS operation skill and writes the matching agent guidance.
 `--agent` is required, and installation to a generic global directory is not supported.
 `--memos-plugin` defaults to `false`. Set it to `true` when the target agent already has the MemOS memory plugin installed and should prefer plugin search/add flows.
 It also installs shell completion automatically for the current shell when shell detection succeeds.

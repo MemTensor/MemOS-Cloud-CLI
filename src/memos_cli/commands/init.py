@@ -9,7 +9,13 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.prompt import Prompt
-from typer._completion_shared import _get_shell_name, install as install_shell_completion
+from typer._completion_shared import install as install_shell_completion
+
+try:
+    from typer._completion_shared import _get_shell_name
+except ImportError:
+    def _get_shell_name() -> str:
+        raise RuntimeError("Shell detection is unavailable in this Typer version")
 
 from memos_cli.config import (
     DEFAULT_CONVERSATION_ID,
@@ -104,9 +110,33 @@ def _guidance_template_path() -> Path:
 
 
 def _resolve_guidance_file(agent: str) -> Path:
-    """Resolve the workspace guidance file path for the current project."""
-    _ = agent
-    return Path.cwd() / "AGENTS.md"
+    """Resolve the primary global guidance file path for the target agent."""
+    return _resolve_guidance_files(agent)[0]
+
+
+def _resolve_guidance_files(agent: str) -> list[Path]:
+    """Resolve all global guidance file paths for the target agent."""
+    normalized = agent.strip().lower()
+    if normalized == "openclaw":
+        return _resolve_openclaw_guidance_files()
+
+    skills_root = _resolve_skills_dir(agent)
+    agent_home = skills_root.parent
+    if normalized == "claude":
+        return [agent_home / "CLAUDE.md"]
+    return [agent_home / "AGENTS.md"]
+
+
+def _resolve_openclaw_guidance_files() -> list[Path]:
+    """Resolve OpenClaw guidance files across known workspaces."""
+    openclaw_home = _resolve_skills_dir("openclaw").parent
+    workspace_guidance = openclaw_home / "workspace" / "AGENTS.md"
+
+    # TODO: Read agents.list from ~/.openclaw/openclaw.json and create/update
+    # every configured workspace AGENTS.md instead of relying on existing files.
+    guidance_files = set(openclaw_home.rglob("AGENTS.md")) if openclaw_home.exists() else set()
+    guidance_files.add(workspace_guidance)
+    return sorted(guidance_files)
 
 
 def _build_agent_guidance(agent: str) -> str:
@@ -140,12 +170,13 @@ def _upsert_guidance_block(path: Path, content: str) -> None:
     path.write_text(updated.rstrip() + "\n")
 
 
-def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> Path:
+def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> list[Path]:
     """Install or update global MemOS CLI guidance for the target agent."""
-    guidance_file = _resolve_guidance_file(agent)
+    guidance_files = _resolve_guidance_files(agent)
     guidance_content = _build_plugin_agent_guidance(agent) if memos_plugin else _build_agent_guidance(agent)
-    _upsert_guidance_block(guidance_file, guidance_content)
-    return guidance_file
+    for guidance_file in guidance_files:
+        _upsert_guidance_block(guidance_file, guidance_content)
+    return guidance_files
 
 
 def _install_cli_completion() -> tuple[str, Path] | None:
@@ -249,7 +280,7 @@ def init_cmd(
     except ValueError as exc:
         console.print(f"\n[red]Error:[/] {exc}")
         raise typer.Exit(1)
-    guidance_path = _install_agent_guidance(agent, memos_plugin=memos_plugin)
+    guidance_paths = _install_agent_guidance(agent, memos_plugin=memos_plugin)
 
     console.print("\n[green]✓[/] Configuration saved successfully!")
     console.print(f"  Config file: [dim]~/.memos/config.yaml[/]")
@@ -258,6 +289,6 @@ def init_cmd(
     console.print(f"  Target agent: [dim]{agent}[/]")
     console.print(f"  MemOS plugin: [dim]{'enabled' if memos_plugin else 'disabled'}[/]")
     console.print(f"  Installed skill: [dim]{skills_path / 'memos-memory'}[/]")
-    console.print(f"  Agent guidance: [dim]{guidance_path}[/]")
+    console.print(f"  Agent guidance: [dim]{', '.join(str(path) for path in guidance_paths)}[/]")
     console.print("  Shell completion: [dim]Skipped (disabled during init)[/]")
     console.print('\n[dim]Try running:[/] memos add "Your first memory"')

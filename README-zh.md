@@ -72,7 +72,7 @@ npm uninstall -g @memtensor/memos-cloud-cli
 memos init --agent codex
 ```
 
-该命令会同时安装 MemOS 记忆操作 skill 到你显式指定的 Agent skills 目录。
+该命令会安装 MemOS 记忆操作 skill，并写入对应 Agent 的 guidance。
 `--agent` 为必填项，不支持安装到通用全局目录。
 当 shell 能被识别时，该命令也会自动安装命令补全。
 
