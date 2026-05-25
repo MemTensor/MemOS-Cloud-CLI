@@ -11,6 +11,15 @@ on:
         description: "number of memos --version runs"
         required: true
         default: "5"
+  push:
+    branches:
+      - user/jiangtao/feat_memos_agents_md_init
+    paths:
+      - ".github/workflows/startup-benchmark.yml"
+
+env:
+  PACKAGE_SPEC: ${{ github.event_name == 'workflow_dispatch' && inputs.package || '@memtensor/memos-cloud-cli@beta' }}
+  BENCHMARK_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || '5' }}
 
 jobs:
   benchmark:
@@ -32,7 +41,7 @@ jobs:
       - name: Install package
         shell: pwsh
         run: |
-          npm install -g "${{ inputs.package }}"
+          npm install -g "$env:PACKAGE_SPEC"
           npm list -g --depth=0
           Get-Command memos | Format-List *
 
@@ -40,7 +49,7 @@ jobs:
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
-          $runs = [int]"${{ inputs.runs }}"
+          $runs = [int]"$env:BENCHMARK_RUNS"
           if ($runs -lt 1) {
             throw "runs must be >= 1"
           }
@@ -74,7 +83,7 @@ jobs:
           @(
             "# startup benchmark: ${{ matrix.os }}"
             ""
-            "- package: `${{ inputs.package }}`"
+            "- package: `$env:PACKAGE_SPEC`"
             "- runs: $runs"
             "- average_seconds: $average"
             "- min_seconds: $minimum"
