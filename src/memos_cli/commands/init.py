@@ -141,14 +141,14 @@ def _resolve_openclaw_guidance_files() -> list[Path]:
 
 def _build_agent_guidance(agent: str) -> str:
     """Build agent-specific MemOS CLI guidance content from template."""
-    template = _guidance_template_path().read_text()
+    template = _guidance_template_path().read_text(encoding="utf-8")
     content = template.rstrip()
     return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
 
 
 def _build_plugin_agent_guidance(agent: str) -> str:
     """Build agent guidance for environments where the MemOS plugin is installed."""
-    template = _guidance_template_path().read_text()
+    template = _guidance_template_path().read_text(encoding="utf-8")
     start = template.find("## MemOS Plugin Mode")
     if start == -1:
         return _build_agent_guidance(agent)
@@ -159,7 +159,7 @@ def _build_plugin_agent_guidance(agent: str) -> str:
 def _upsert_guidance_block(path: Path, content: str) -> None:
     """Insert or replace the managed MemOS CLI guidance block."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text() if path.exists() else ""
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
     if GUIDANCE_START in existing and GUIDANCE_END in existing:
         start = existing.index(GUIDANCE_START)
         end = existing.index(GUIDANCE_END) + len(GUIDANCE_END)
@@ -167,7 +167,7 @@ def _upsert_guidance_block(path: Path, content: str) -> None:
     else:
         prefix = existing.rstrip()
         updated = f"{prefix}\n\n{content}" if prefix else content
-    path.write_text(updated.rstrip() + "\n")
+    path.write_text(updated.rstrip() + "\n", encoding="utf-8")
 
 
 def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> list[Path]:
