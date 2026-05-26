@@ -15,9 +15,6 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - os: macos-14
-            build_script: ./scripts/build-binary.sh
-            upload_name: darwin-arm64
           - os: ubuntu-22.04
             build_script: ./scripts/build-binary.sh
             upload_name: linux-x64
