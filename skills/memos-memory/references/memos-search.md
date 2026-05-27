@@ -10,7 +10,7 @@ Use this command when:
 - you want to find relevant memories before responding or storing new ones.
 
 Never do:
-- paste an entire long conversation as the raw query;
+- expand the original user query by pasting an entire long conversation into the search query;
 - skip identity fields when user or conversation scope matters;
 - use `search` when you already have the exact target records you need.
 
@@ -40,7 +40,7 @@ memos search "restaurants food preferences" --user-id user_123 --format agent --
 ```
 
 Working rules:
-- use compressed keywords instead of raw long-form dialogue;
-- prioritize user preferences, entities, and topic terms in the query;
+- always use the user's original query as the only query for `memos search`;
+- do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
 - pass `--user-id` when user scope matters;
 - do not prepend `memos --help` when `search` is the already known goal.

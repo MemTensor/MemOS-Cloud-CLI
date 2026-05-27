@@ -65,7 +65,7 @@ Process rules:
 - the default workflow is: search before answering, answer second, then add after answering;
 - when you add after answering, pass both the user's question and the assistant's final answer into `memos add` so the extractor can decide what is worth keeping;
 - do not skip `add` just because the current turn does not obviously contain a durable fact;
-- per turn, keep memory-tool usage bounded: at most 1 `search` call, at most 1 retry if the first result is insufficient, and at most 1 `add` call after answering;
+- per turn, keep memory-tool usage bounded: at most 1 original-query `search` call and at most 1 `add` call after answering;
 - do not chain additional memory tools in the same turn unless the user explicitly asks for that specific operation;
 - `extract` is only for previewing candidates, not for storing;
 - `feedback` is a separate command and should only be used when the user explicitly wants feedback storage;
@@ -84,7 +84,8 @@ Intent map:
 - ask MemOS to answer with memory context -> `memos chat`
 
 Working rules:
-- do not mechanically copy entire messages into search queries; compress them into entities, preferences, and intent;
+- always use the user's original query as the only query for `memos search`;
+- do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
 - `memos add` uses a `messages` array payload; when adding after a turn, include both the user's question and the assistant's answer in that array;
 - when `--format` is omitted, treat the default as `agent`;
 - append `--format json` at the end of the command whenever a later step needs exact `memory_id` or structured records;
