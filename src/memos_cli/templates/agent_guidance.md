@@ -12,7 +12,7 @@ Rules:
 - after each task or turn is complete, run `memos add` with both the user's question and the assistant's final answer.
 
 Command guide:
-- `memos search`: retrieve context with the user's original query when memory may matter.
+- `memos search`: always retrieve context with the user's original query.
   - Example: `memos search "user preferences" --format agent --detail simple`
 - `memos add`: store the user's question and the assistant's final answer after replying.
   - Example: `memos add "User prefers dark mode" --format json`
