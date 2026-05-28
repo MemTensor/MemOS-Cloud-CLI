@@ -4,17 +4,16 @@ Intent map:
 - store a durable fact, preference, decision, or long-term task -> `memos add`
 - after answering a user, pass the user's question plus the assistant's final answer into `memos add`
 - do not use `--help` first when the goal is already to store a fact
-- use `add` instead of `extract` or `feedback` when the user is directly asking to remember something
+<!-- - use `add` instead of `extract` or `feedback` when the user is directly asking to remember something -->
 
 Use this command when:
 - after answering every user question;
-- when the user explicitly asks to remember, save, or store something;
-- the conversation produces a memory likely to help future turns;
-- you already know the memory should be stored, not just previewed.
 
 API shape:
 - `add` accepts a `messages` array, not a single plain text string;
-- when called after answering, include both the user's question and the assistant's answer in that array;
+- when called after answering, include both the user's original query and the assistant's final answer in that array;
+- the user message content must exactly match the original query;
+- the assistant message content must exactly match the final answer sent to the user; do not rewrite, summarize, compress, or modify it;
 - let the backend extractor decide which parts are worth persisting.
 
 Never store:

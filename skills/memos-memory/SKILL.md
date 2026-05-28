@@ -17,8 +17,7 @@ Command selection rules:
 
 Identity rules:
 - always prefer the exact configured `user_id` value when a command is scoped by user;
-- do not shorten, normalize, or replace the configured `user_id` (for example, `locomo_exp_user_0` must stay exactly as-is);
-- use `--user-id` explicitly on every scoped memory command when the user scope matters.
+- if the user does not specify the `user_id`, omit the `--user-id` argument and use the `user_id` from the config file by default;
 
 Hard mapping:
 - store a durable fact, preference, decision, or long-term task -> `memos add`
@@ -42,7 +41,7 @@ Never store:
 - short-lived task state that will not matter in future sessions;
 - redundant paraphrases when one concise factual memory is enough.
 
-Use these commands:
+Command examples:
 - `memos add "<fact>" --user-id <USER_ID> --format json`
 - `memos extract "<message>" --user-id <USER_ID> --format json`
 - `memos search "<query>" --user-id <USER_ID> --format agent --detail simple`
@@ -69,9 +68,7 @@ Process rules:
 - do not chain additional memory tools in the same turn unless the user explicitly asks for that specific operation;
 - `extract` is only for previewing candidates, not for storing;
 - `feedback` is a separate command and should only be used when the user explicitly wants feedback storage;
-<!-- - if the user’s message is already a memory write request, prefer `add` over `feedback` or `extract`. -->
 - do not start a memory-write request by checking config or running `memos init`;
-<!-- - if the user says "remember these messages", "save these messages", or equivalent, go directly to `memos add` with the exact configured `user_id`. -->
 
 Intent map:
 - preview what would be stored -> `memos extract`
@@ -87,6 +84,8 @@ Working rules:
 - must use the user's original query as the only query for `memos search`;
 - do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
 - `memos add` uses a `messages` array payload; when adding after a turn, include both the user's question and the assistant's answer in that array;
+- in the `memos add` payload, the user message content must exactly match the original user query;
+- in the `memos add` payload, the assistant message content must exactly match the final answer sent to the user; do not rewrite, summarize, compress, or modify it;
 - when `--format` is omitted, treat the default as `agent`;
 - append `--format json` at the end of the command whenever a later step needs exact `memory_id` or structured records;
 - append `--format agent` at the end of the command when the result will be injected back into model context;
@@ -95,7 +94,7 @@ Working rules:
 - only run `memos init --agent <current_agent>` when the CLI is missing and the user has explicitly provided an API key or asked to initialize MemOS;
 - if initialization is needed but no API key is available, ask the user for the key instead of stopping the workflow;
 - the active agent should initialize itself with its own `--agent` value, not a hardcoded different agent name;
-- prefer stable identity fields such as `--user-id` when available;
+- pass `--user-id` only when the user explicitly provides it; otherwise omit it and let the CLI use the config default;
 - read result counts from `count` and structured payloads from `data`;
 - if you already have `memory_id`, do not search first just to guess.
 

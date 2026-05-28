@@ -44,5 +44,4 @@ memos search "restaurants food preferences" --user-id user_123 --format agent --
 Working rules:
 - every time, must use the user's original query as the only query for `memos search`;
 - do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
-- pass `--user-id` when user scope matters;
 - do not prepend `memos --help` when `search` is the already known goal.

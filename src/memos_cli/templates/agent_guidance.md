@@ -34,7 +34,9 @@ Command guide:
 - After the original-query search, answer with the available memory context; if results are insufficient, ambiguous, or partial, do not run an additional search.
 - Use `memos origin` only when a concrete memory ID is available and you need the source text behind that memory.
 - `memos add` sends a `messages` array payload; when adding after a turn, include both the user's question and the assistant's final answer.
-- Must add after every completed task or answer, even when no search was needed or search returned no useful memories; treat `add` as the ingestion step where the extractor filters what is worth keeping.
+- For `memos add`, the user message content must exactly match the original user query.
+- For `memos add`, the assistant message content must exactly match the final answer sent to the user; do not rewrite, summarize, compress, or modify it.
+- Must add after every completed task or answer, even when search returned no useful memories; treat `add` as the ingestion step where the extractor filters what is worth keeping.
 - Per turn, must use at most 1 original-query `search` call and at most 1 `add` call unless the user explicitly asks for a different memory operation.
 - Do not chain extra memory-tool calls in the same turn when the current answer can already be given.
 - The required order is: original-query search first, answer second, add last.
