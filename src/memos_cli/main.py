@@ -83,7 +83,7 @@ def main_callback(
     ),
 ):
     """MemOS CLI - Universal memory interface for AI agents."""
-    if version:
+    if version is True or (isinstance(version, str) and version.lower() == "true"):
         console.print(f"MemOS CLI v{__version__}")
         raise typer.Exit()
 
