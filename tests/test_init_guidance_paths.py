@@ -88,6 +88,46 @@ class GuidancePathResolutionTests(unittest.TestCase):
             for path in written:
                 self.assertIn("## Test Guidance", path.read_text())
 
+    def test_cli_guidance_excludes_plugin_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template = Path(temp_dir) / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\n"
+                "CLI guidance\n\n"
+                "---\n\n"
+                "## MemOS Plugin Mode\n\n"
+                "Plugin guidance\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                content = init._build_agent_guidance("cursor")
+
+        self.assertIn("## MemOS CLI", content)
+        self.assertIn("CLI guidance", content)
+        self.assertNotIn("## MemOS Plugin Mode", content)
+        self.assertNotIn("Plugin guidance", content)
+
+    def test_plugin_guidance_excludes_cli_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template = Path(temp_dir) / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\n"
+                "CLI guidance\n\n"
+                "---\n\n"
+                "## MemOS Plugin Mode\n\n"
+                "Plugin guidance\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                content = init._build_plugin_agent_guidance("cursor")
+
+        self.assertNotIn("## MemOS CLI", content)
+        self.assertNotIn("CLI guidance", content)
+        self.assertIn("## MemOS Plugin Mode", content)
+        self.assertIn("Plugin guidance", content)
+
 
 if __name__ == "__main__":
     unittest.main()

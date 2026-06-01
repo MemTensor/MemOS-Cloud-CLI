@@ -142,7 +142,8 @@ def _resolve_openclaw_guidance_files() -> list[Path]:
 def _build_agent_guidance(agent: str) -> str:
     """Build agent-specific MemOS CLI guidance content from template."""
     template = _guidance_template_path().read_text(encoding="utf-8")
-    content = template.rstrip()
+    plugin_start = template.find("## MemOS Plugin Mode")
+    content = template[:plugin_start].rstrip() if plugin_start != -1 else template.rstrip()
     return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
 
 
