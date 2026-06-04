@@ -30,6 +30,10 @@ console = Console()
 DEFAULT_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
 GUIDANCE_START = "<!-- MEMOS_CLI:START -->"
 GUIDANCE_END = "<!-- MEMOS_CLI:END -->"
+CODEX_PREFIX_RULES = (
+    'prefix_rule(pattern=["memos", "search"], decision="allow")',
+    'prefix_rule(pattern=["memos", "add"], decision="allow")',
+)
 SUPPORTED_SKILL_AGENTS = {
     "codex": Path.home() / ".codex" / "skills",
     "cursor": Path.home() / ".cursor" / "skills",
@@ -180,6 +184,67 @@ def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> list[P
     return guidance_files
 
 
+def _resolve_codex_rules_file() -> Path:
+    """Resolve Codex's default approved command prefix rules file."""
+    codex_home = os.getenv("CODEX_HOME")
+    if codex_home:
+        return Path(codex_home).expanduser() / "rules" / "default.rules"
+    return Path.home() / ".codex" / "rules" / "default.rules"
+
+
+def _should_skip_codex_prefix_rules() -> bool:
+    """Return whether Codex prefix rule configuration is disabled by environment."""
+    value = os.getenv("MEMOS_SKIP_CODEX_RULES", "").strip().lower()
+    return value in {"1", "true", "yes", "on"}
+
+
+def _should_configure_codex_prefix_rules(agent: str, *, no_codex_prefix_rules: bool = False) -> bool:
+    """Return whether init should update Codex approved command prefix rules."""
+    return (
+        agent.strip().lower() == "codex"
+        and not no_codex_prefix_rules
+        and not _should_skip_codex_prefix_rules()
+    )
+
+
+def _atomic_write_text(path: Path, content: str) -> None:
+    """Atomically write UTF-8 text to a path on the same filesystem."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        if path.exists():
+            temp_path.chmod(path.stat().st_mode & 0o777)
+        os.replace(temp_path, path)
+    finally:
+        if temp_path.exists():
+            try:
+                temp_path.unlink()
+            except OSError:
+                pass
+
+
+def _ensure_codex_prefix_rules(rules_file: Path | None = None) -> tuple[Path, bool]:
+    """Ensure Codex allows only the MemOS search/add command prefixes."""
+    path = rules_file or _resolve_codex_rules_file()
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing_lines = set(existing.splitlines())
+    missing_rules = [rule for rule in CODEX_PREFIX_RULES if rule not in existing_lines]
+
+    if not missing_rules:
+        return path, False
+
+    if existing:
+        separator = "" if existing.endswith("\n") else "\n"
+        missing_text = "\n".join(missing_rules)
+        updated = f"{existing}{separator}{missing_text}\n"
+    else:
+        updated = "\n".join(missing_rules) + "\n"
+
+    _atomic_write_text(path, updated)
+    return path, True
+
+
 def _install_cli_completion() -> tuple[str, Path] | None:
     """Install shell completion for the current shell when supported."""
     shell = _detect_completion_shell()
@@ -205,6 +270,11 @@ def init_cmd(
         False,
         "--memos-plugin",
         help="Write plugin-aware guidance when a MemOS memory plugin is installed.",
+    ),
+    no_codex_prefix_rules: bool = typer.Option(
+        False,
+        "--no-codex-prefix-rules",
+        help="Do not update Codex approved command prefixes during Codex initialization.",
     ),
     agent: str | None = typer.Option(
         None,
@@ -282,6 +352,25 @@ def init_cmd(
         console.print(f"\n[red]Error:[/] {exc}")
         raise typer.Exit(1)
     guidance_paths = _install_agent_guidance(agent, memos_plugin=memos_plugin)
+    normalized_agent = agent.strip().lower()
+    codex_rules_path: Path | None = None
+    should_configure_codex_rules = _should_configure_codex_prefix_rules(
+        normalized_agent,
+        no_codex_prefix_rules=no_codex_prefix_rules,
+    )
+
+    if should_configure_codex_rules:
+        try:
+            codex_rules_path, _ = _ensure_codex_prefix_rules()
+        except OSError as exc:
+            fallback_path = _resolve_codex_rules_file()
+            console.print(
+                "\n[yellow]Warning:[/] Could not configure Codex approved command prefixes "
+                f"at [dim]{fallback_path}[/]: {exc}"
+            )
+            console.print("Add these lines manually:")
+            for rule in CODEX_PREFIX_RULES:
+                console.print(f"  {rule}")
 
     console.print("\n[green]✓[/] Configuration saved successfully!")
     console.print(f"  Config file: [dim]~/.memos/config.yaml[/]")
@@ -291,5 +380,10 @@ def init_cmd(
     console.print(f"  MemOS plugin: [dim]{'enabled' if memos_plugin else 'disabled'}[/]")
     console.print(f"  Installed skill: [dim]{skills_path / 'memos-memory'}[/]")
     console.print(f"  Agent guidance: [dim]{', '.join(str(path) for path in guidance_paths)}[/]")
+    if codex_rules_path is not None:
+        console.print(
+            "  Codex prefixes: [dim]Configured Codex approved command prefixes "
+            "for: memos search, memos add[/]"
+        )
     console.print("  Shell completion: [dim]Skipped (disabled during init)[/]")
     console.print('\n[dim]Try running:[/] memos add "Your first memory"')

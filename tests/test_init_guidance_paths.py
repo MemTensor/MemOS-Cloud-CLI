@@ -128,6 +128,64 @@ class GuidancePathResolutionTests(unittest.TestCase):
         self.assertIn("## MemOS Plugin Mode", content)
         self.assertIn("Plugin guidance", content)
 
+    def test_codex_prefix_rules_are_created(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rules_file = Path(temp_dir) / ".codex" / "rules" / "default.rules"
+
+            path, changed = init._ensure_codex_prefix_rules(rules_file)
+
+            self.assertTrue(changed)
+            self.assertEqual(path, rules_file)
+            self.assertEqual(
+                rules_file.read_text(encoding="utf-8").splitlines(),
+                list(init.CODEX_PREFIX_RULES),
+            )
+
+    def test_codex_prefix_rules_are_idempotent_and_preserve_existing_content(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            rules_file = Path(temp_dir) / "default.rules"
+            original = (
+                "# keep this comment\n"
+                'prefix_rule(pattern=["git", "status"], decision="allow")\n'
+                'prefix_rule(pattern=["memos", "search"], decision="allow")\n'
+            )
+            rules_file.write_text(original, encoding="utf-8")
+
+            _, first_changed = init._ensure_codex_prefix_rules(rules_file)
+            after_first = rules_file.read_text(encoding="utf-8")
+            _, second_changed = init._ensure_codex_prefix_rules(rules_file)
+            after_second = rules_file.read_text(encoding="utf-8")
+
+            self.assertTrue(first_changed)
+            self.assertFalse(second_changed)
+            self.assertEqual(after_first, after_second)
+            self.assertTrue(after_first.startswith(original))
+            for rule in init.CODEX_PREFIX_RULES:
+                self.assertEqual(after_first.splitlines().count(rule), 1)
+
+    def test_codex_prefix_rules_can_be_disabled(self) -> None:
+        self.assertFalse(init._should_configure_codex_prefix_rules("cursor"))
+        self.assertFalse(
+            init._should_configure_codex_prefix_rules(
+                "codex",
+                no_codex_prefix_rules=True,
+            )
+        )
+        with patch.dict("os.environ", {"MEMOS_SKIP_CODEX_RULES": "1"}, clear=False):
+            self.assertFalse(init._should_configure_codex_prefix_rules("codex"))
+
+        with patch.dict("os.environ", {"MEMOS_SKIP_CODEX_RULES": ""}, clear=False):
+            self.assertTrue(init._should_configure_codex_prefix_rules("codex"))
+
+    def test_codex_rules_file_honors_codex_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            codex_home = Path(temp_dir) / "codex-home"
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                self.assertEqual(
+                    init._resolve_codex_rules_file(),
+                    codex_home / "rules" / "default.rules",
+                )
+
 
 if __name__ == "__main__":
     unittest.main()
