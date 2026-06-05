@@ -395,6 +395,24 @@ Parameters:
 - `--file-ids`: JSON array of file IDs; required.
 - `--format`: Output format; optional; default `agent`.
 
+#### `memos kb list-file`
+
+List files in a knowledge base with pagination and optional type filtering.
+
+```bash
+memos kb list-file --kb-id base_xxxxx
+memos kb list-file --kb-id base_xxxxx --type document
+memos kb list-file --kb-id base_xxxxx --type skill --page 2 --page-size 10 --format json
+```
+
+Parameters:
+
+- `--kb-id`: Knowledge base ID; required.
+- `--type`: Filter by file type: `document` or `skill`; optional.
+- `--page`: Page number; optional; default `1`.
+- `--page-size`: Items per page; optional; default `20`.
+- `--format`: Output format; optional; default `agent`.
+
 #### `memos kb delete-file`
 
 Delete files from a knowledge base.

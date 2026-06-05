@@ -393,6 +393,24 @@ memos kb get-file --file-ids '["file_id_1", "file_id_2"]' --format json
 - `--file-ids`：文件 ID 列表 JSON 数组；必填。
 - `--format`：输出格式；可选；默认值为 `agent`。
 
+#### `memos kb list-file`
+
+列出知识库中的文件列表，支持分页和类型过滤。
+
+```bash
+memos kb list-file --kb-id base_xxxxx
+memos kb list-file --kb-id base_xxxxx --type document
+memos kb list-file --kb-id base_xxxxx --type skill --page 2 --page-size 10 --format json
+```
+
+参数说明：
+
+- `--kb-id`：知识库 ID；必填。
+- `--type`：按文件类型过滤：`document` 或 `skill`；可选。
+- `--page`：页码；可选；默认值为 `1`。
+- `--page-size`：每页条数；可选；默认值为 `20`。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
 #### `memos kb delete-file`
 
 删除知识库中的文件。
