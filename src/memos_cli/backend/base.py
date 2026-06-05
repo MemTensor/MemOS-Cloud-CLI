@@ -62,3 +62,42 @@ class BackendBase(ABC):
     def delete_memory(self, memory_ids: list[str], **kwargs) -> dict[str, Any]:
         """Delete memories."""
         pass
+
+    # --- Message API ---
+
+    @abstractmethod
+    def get_message(self, user_id: str, conversation_id: str, **kwargs) -> dict[str, Any]:
+        """Get original conversation messages."""
+        pass
+
+    @abstractmethod
+    def get_status(self, task_id: str) -> dict[str, Any]:
+        """Get async task status."""
+        pass
+
+    # --- Knowledge Base API ---
+
+    @abstractmethod
+    def kb_create(self, name: str, description: str | None = None) -> dict[str, Any]:
+        """Create a knowledge base."""
+        pass
+
+    @abstractmethod
+    def kb_remove(self, kb_id: str) -> dict[str, Any]:
+        """Remove a knowledge base."""
+        pass
+
+    @abstractmethod
+    def kb_add_file(self, kb_id: str, files: list[dict[str, str]]) -> dict[str, Any]:
+        """Upload documents to a knowledge base."""
+        pass
+
+    @abstractmethod
+    def kb_get_file(self, file_ids: list[str]) -> dict[str, Any]:
+        """Get knowledge base file details."""
+        pass
+
+    @abstractmethod
+    def kb_delete_file(self, kb_id: str, file_ids: list[str]) -> dict[str, Any]:
+        """Delete files from a knowledge base."""
+        pass

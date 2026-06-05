@@ -11,6 +11,8 @@ from memos_cli.completion import register_completion_compat
 from memos_cli.commands.init import init_cmd
 from memos_cli.commands.config_cmd import config_app
 from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, delete, origin
+from memos_cli.commands.message import message, status
+from memos_cli.commands.kb import kb_app
 from memos_cli.state import set_runtime_options
 console = Console()
 err_console = Console(stderr=True)
@@ -33,6 +35,9 @@ class CommandFirstTyperGroup(TyperGroup):
         "rerank",
         "feedback",
         "chat",
+        "message",
+        "status",
+        "kb",
     ]
 
     def format_help(self, ctx: click.Context, formatter: click.HelpFormatter) -> None:
@@ -131,6 +136,13 @@ app.command(rich_help_panel="Memory Operations")(delete)
 # Advanced commands (P1)
 app.command(rich_help_panel="Advanced")(rerank)
 app.command(rich_help_panel="Advanced")(chat)
+
+# Message commands
+app.command(rich_help_panel="Message")(message)
+app.command(rich_help_panel="Message")(status)
+
+# Knowledge Base sub-app
+app.add_typer(kb_app, rich_help_panel="Knowledge Base")
 
 
 

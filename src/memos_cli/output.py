@@ -1225,3 +1225,152 @@ def _build_generic_agent_context(command: str, data: Any, *, identity: dict[str,
         lines.append(str(data))
     lines.append(f"</{command}_context>")
     return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Message formatters
+# ---------------------------------------------------------------------------
+
+
+def format_message_result(console: Console, result: dict, output: str = "text") -> None:
+    """Format get_message API response for table/markdown output."""
+    data = result.get("data", result) if isinstance(result, dict) else result
+    messages = []
+    if isinstance(data, dict):
+        messages = data.get("message_detail_list", [])
+    elif isinstance(data, list):
+        messages = data
+
+    if not messages:
+        console.print("[dim]No messages found.[/]")
+        return
+
+    if output == "markdown":
+        lines = ["| # | Role | Content | Time |", "| --- | --- | --- | --- |"]
+        for i, msg in enumerate(messages, 1):
+            role = msg.get("role", "")
+            content = (msg.get("content", "") or "")[:80]
+            created = msg.get("create_time", "") or ""
+            lines.append(f"| {i} | {role} | {content} | {created} |")
+        console.print("\n".join(lines))
+        return
+
+    table = Table(title="Messages", show_lines=True)
+    table.add_column("#", style="dim", width=3)
+    table.add_column("Role", style="bold")
+    table.add_column("Content")
+    table.add_column("Time", style="dim")
+
+    for i, msg in enumerate(messages, 1):
+        role = msg.get("role", "")
+        content = (msg.get("content", "") or "")[:120]
+        created = msg.get("create_time", "") or ""
+        table.add_row(str(i), role, content, created)
+
+    console.print(table)
+
+
+def format_status_result(console: Console, result: dict, output: str = "text") -> None:
+    """Format get_status API response."""
+    data = result.get("data", result) if isinstance(result, dict) else result
+    status_val = "unknown"
+    if isinstance(data, dict):
+        status_val = data.get("status", "unknown")
+    elif isinstance(data, str):
+        status_val = data
+
+    style_map = {
+        "completed": "[green]completed[/]",
+        "running": "[yellow]running[/]",
+        "failed": "[red]failed[/]",
+    }
+    styled = style_map.get(status_val, status_val)
+
+    if output == "markdown":
+        console.print(f"**Status**: {status_val}")
+    else:
+        console.print(f"Task status: {styled}")
+
+
+# ---------------------------------------------------------------------------
+# Knowledge Base formatters
+# ---------------------------------------------------------------------------
+
+
+def format_kb_create_result(console: Console, result: dict, output: str = "text") -> None:
+    """Format create knowledgebase response."""
+    data = result.get("data", result) if isinstance(result, dict) else result
+    kb_id = ""
+    if isinstance(data, dict):
+        kb_id = data.get("id", "")
+    message_text = result.get("message", "") if isinstance(result, dict) else ""
+
+    if output == "markdown":
+        console.print(f"**Created**: `{kb_id}`")
+    else:
+        console.print(f"[green]Knowledge base created.[/] ID: {kb_id}")
+        if message_text:
+            console.print(f"[dim]{message_text}[/]")
+
+
+def format_kb_remove_result(console: Console, result: dict, output: str = "text") -> None:
+    """Format remove knowledgebase / delete-file response."""
+    data = result.get("data", result) if isinstance(result, dict) else result
+    success = True
+    if isinstance(data, dict):
+        success = data.get("success", True)
+
+    if output == "markdown":
+        status_text = "success" if success else "failed"
+        console.print(f"**Result**: {status_text}")
+    else:
+        if success:
+            console.print("[green]Operation successful.[/]")
+        else:
+            console.print("[red]Operation failed.[/]")
+
+
+def format_kb_file_result(console: Console, result: dict, output: str = "text") -> None:
+    """Format add/get knowledgebase-file response."""
+    data = result.get("data", result) if isinstance(result, dict) else result
+
+    if isinstance(data, dict) and "file_detail_list" in data:
+        files = data["file_detail_list"]
+    elif isinstance(data, dict) and "id" in data:
+        files = [data]
+    elif isinstance(data, list):
+        files = data
+    else:
+        console.print("[dim]No file details returned.[/]")
+        return
+
+    if not files:
+        console.print("[dim]No file details returned.[/]")
+        return
+
+    if output == "markdown":
+        lines = ["| ID | Name | Size | Status |", "| --- | --- | --- | --- |"]
+        for f in files:
+            fid = f.get("id", "")
+            name = f.get("name", "")
+            size = f.get("size", f.get("sizeMB", ""))
+            status_val = f.get("status", "")
+            lines.append(f"| {fid} | {name} | {size} | {status_val} |")
+        console.print("\n".join(lines))
+        return
+
+    table = Table(title="Knowledge Base Files", show_lines=True)
+    table.add_column("ID", style="dim")
+    table.add_column("Name")
+    table.add_column("Size")
+    table.add_column("Status")
+
+    for f in files:
+        fid = f.get("id", "")
+        name = f.get("name", "")
+        size = str(f.get("size", f.get("sizeMB", "")))
+        status_val = f.get("status", "")
+        style = "green" if status_val == "completed" else "yellow" if status_val == "running" else ""
+        table.add_row(fid, name, size, Text(status_val, style=style))
+
+    console.print(table)
