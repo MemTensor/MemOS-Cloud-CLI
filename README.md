@@ -301,6 +301,114 @@ Parameters:
 - `-q, --query`: Chat query text; optional; alias of `[QUERY]`; no separate default.
 - `--user-id`: User scope; optional; defaults to configured `defaults.user_id`.
 
+### `memos message`
+
+Retrieve original conversation messages.
+
+Example:
+
+```bash
+memos message --user-id user_123 --conversation-id conv_001 --format json
+memos message --user-id user_123 --limit 10 --format table
+```
+
+Parameters:
+
+- `--user-id`: User ID; required.
+- `--conversation-id`: Conversation ID; optional; defaults to configured `defaults.conversation_id`.
+- `--limit`: Max messages to return; optional; default 6, max 50.
+- `--format`: Output format; optional; default `agent`.
+
+### `memos status`
+
+Query async task processing status (from `task_id` returned by `add` or `feedback` with `async_mode`).
+
+Example:
+
+```bash
+memos status abc123-task-id --format json
+```
+
+Parameters:
+
+- `[TASK_ID]`: Async task ID; required.
+- `--format`: Output format; optional; default `agent`.
+
+Returned status values: `running`, `completed`, `failed`.
+
+### `memos kb`
+
+Knowledge base management subcommand group.
+
+#### `memos kb create`
+
+Create a knowledge base.
+
+```bash
+memos kb create --name "Product FAQ" --description "Common product questions" --format json
+```
+
+Parameters:
+
+- `--name`: Knowledge base name; required.
+- `--description`: Knowledge base description; optional.
+- `--format`: Output format; optional; default `agent`.
+
+#### `memos kb remove`
+
+Remove (delete) a knowledge base.
+
+```bash
+memos kb remove base_xxxxx --format json
+```
+
+Parameters:
+
+- `[KB_ID]`: Knowledge base ID; required.
+- `--format`: Output format; optional; default `agent`.
+
+#### `memos kb add-file`
+
+Upload documents to a knowledge base. Supports PDF, DOCX, DOC, TXT, JSON, MD, XML.
+
+```bash
+memos kb add-file --kb-id base_xxxxx --files '["https://example.com/doc.pdf"]' --format json
+memos kb add-file --kb-id base_xxxxx --files '[{"content":"https://cdn.example.com/file.docx"}]' --format json
+```
+
+Parameters:
+
+- `--kb-id`: Target knowledge base ID; required.
+- `--files`: JSON array of file entries — URL strings or `{"content": "..."}` objects; required.
+- `--format`: Output format; optional; default `agent`.
+
+#### `memos kb get-file`
+
+Get knowledge base file details and processing status.
+
+```bash
+memos kb get-file --file-ids '["file_id_1", "file_id_2"]' --format json
+```
+
+Parameters:
+
+- `--file-ids`: JSON array of file IDs; required.
+- `--format`: Output format; optional; default `agent`.
+
+#### `memos kb delete-file`
+
+Delete files from a knowledge base.
+
+```bash
+memos kb delete-file --kb-id base_xxxxx --file-ids '["file_id_1"]' --format json
+```
+
+Parameters:
+
+- `--kb-id`: Knowledge base ID; required.
+- `--file-ids`: JSON array of file IDs to delete; required.
+- `--format`: Output format; optional; default `agent`.
+
 ## Output Modes
 
 Each subcommand supports trailing `--format`. Only `search` and `get` also support trailing `--detail`:

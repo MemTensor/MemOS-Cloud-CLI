@@ -299,6 +299,114 @@ memos chat "你知道我的偏好吗？" --user-id user_123 --format agent
 - `-q, --query`：对话问题；可选；`[QUERY]` 的别名；无单独默认值。
 - `--user-id`：用户维度；可选；默认取配置中的 `defaults.user_id`。
 
+### `memos message`
+
+用于获取原始对话消息记录。
+
+示例：
+
+```bash
+memos message --user-id user_123 --conversation-id conv_001 --format json
+memos message --user-id user_123 --limit 10 --format table
+```
+
+参数说明：
+
+- `--user-id`：用户 ID；必填。
+- `--conversation-id`：会话 ID；可选；默认取配置中的 `defaults.conversation_id`。
+- `--limit`：返回消息数量上限；可选；默认 6，最大 50。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+### `memos status`
+
+用于查询异步任务的处理状态（来自 `add` 或 `feedback` 的 `async_mode` 返回的 `task_id`）。
+
+示例：
+
+```bash
+memos status abc123-task-id --format json
+```
+
+参数说明：
+
+- `[TASK_ID]`：异步任务 ID；必填。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+返回状态值：`running`、`completed`、`failed`。
+
+### `memos kb`
+
+知识库管理子命令组。
+
+#### `memos kb create`
+
+创建知识库。
+
+```bash
+memos kb create --name "产品FAQ" --description "产品常见问题汇总" --format json
+```
+
+参数说明：
+
+- `--name`：知识库名称；必填。
+- `--description`：知识库描述；可选。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+#### `memos kb remove`
+
+删除知识库。
+
+```bash
+memos kb remove base_xxxxx --format json
+```
+
+参数说明：
+
+- `[KB_ID]`：知识库 ID；必填。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+#### `memos kb add-file`
+
+上传文档到知识库。支持 PDF、DOCX、DOC、TXT、JSON、MD、XML 格式。
+
+```bash
+memos kb add-file --kb-id base_xxxxx --files '["https://example.com/doc.pdf"]' --format json
+memos kb add-file --kb-id base_xxxxx --files '[{"content":"https://cdn.example.com/file.docx"}]' --format json
+```
+
+参数说明：
+
+- `--kb-id`：目标知识库 ID；必填。
+- `--files`：文件列表 JSON 数组，每个元素为 URL 字符串或 `{"content": "..."}` 对象；必填。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+#### `memos kb get-file`
+
+查看知识库文件的详情及处理状态。
+
+```bash
+memos kb get-file --file-ids '["file_id_1", "file_id_2"]' --format json
+```
+
+参数说明：
+
+- `--file-ids`：文件 ID 列表 JSON 数组；必填。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
+#### `memos kb delete-file`
+
+删除知识库中的文件。
+
+```bash
+memos kb delete-file --kb-id base_xxxxx --file-ids '["file_id_1"]' --format json
+```
+
+参数说明：
+
+- `--kb-id`：知识库 ID；必填。
+- `--file-ids`：待删除的文件 ID 列表 JSON 数组；必填。
+- `--format`：输出格式；可选；默认值为 `agent`。
+
 
 ## 输出模式
 
