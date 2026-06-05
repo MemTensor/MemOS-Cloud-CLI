@@ -98,6 +98,11 @@ class BackendBase(ABC):
         pass
 
     @abstractmethod
+    def kb_list_files(self, kb_id: str, *, file_type: str | None = None, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        """List files in a knowledge base with pagination."""
+        pass
+
+    @abstractmethod
     def kb_delete_file(self, kb_id: str, file_ids: list[str]) -> dict[str, Any]:
         """Delete files from a knowledge base."""
         pass

@@ -96,6 +96,10 @@ class MemOSBackend(BackendBase):
         """Get knowledge base file details."""
         return self.kb_api.get_file(file_ids)
 
+    def kb_list_files(self, kb_id: str, *, file_type: str | None = None, page: int = 1, page_size: int = 20) -> dict[str, Any]:
+        """List files in a knowledge base with pagination."""
+        return self.kb_api.list_files(kb_id, file_type=file_type, page=page, page_size=page_size)
+
     def kb_delete_file(self, kb_id: str, file_ids: list[str]) -> dict[str, Any]:
         """Delete files from a knowledge base."""
         return self.kb_api.delete_file(kb_id, file_ids)

@@ -233,6 +233,51 @@ def cmd_kb_get_file(
     format_kb_file_result(console, result, output=final_output)
 
 
+def cmd_kb_list_files(
+    *,
+    kb_id: str | None,
+    file_type: str | None,
+    page: int,
+    page_size: int,
+    output_format: str | None,
+) -> None:
+    """Execute kb list-file."""
+    start_time = time.time()
+    final_output = resolve_output_format(output_format)
+
+    if not kb_id:
+        console.print("[red]Error:[/] --kb-id is required")
+        raise typer.Exit(1)
+
+    if file_type and file_type not in ("document", "skill"):
+        console.print("[red]Error:[/] --type must be 'document' or 'skill'")
+        raise typer.Exit(1)
+
+    try:
+        _config, backend = _load_backend()
+        result = backend.kb_list_files(kb_id, file_type=file_type, page=page, page_size=page_size)
+    except (typer.Exit, SystemExit):
+        raise
+    except Exception as exc:
+        _handle_error(exc)
+
+    duration_ms = int((time.time() - start_time) * 1000)
+    if final_output == "agent":
+        format_agent_envelope(
+            console,
+            command="kb list-file",
+            data=result,
+            duration_ms=duration_ms,
+            scope={"knowledgebase_id": kb_id, "type": file_type, "page": page, "page_size": page_size},
+            detail="simple",
+        )
+        return
+    if final_output == "json":
+        format_json(console, result)
+        return
+    format_kb_file_result(console, result, output=final_output)
+
+
 def cmd_kb_delete_file(
     *,
     kb_id: str | None,

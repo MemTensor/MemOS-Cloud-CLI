@@ -63,6 +63,30 @@ class KnowledgeBaseAPI:
             "POST", "/get/knowledgebase-file", json_body=payload
         )
 
+    def list_files(
+        self,
+        kb_id: str,
+        *,
+        file_type: str | None = None,
+        page: int = 1,
+        page_size: int = 20,
+    ) -> dict[str, Any]:
+        """List files in a knowledge base with pagination."""
+        if not kb_id:
+            raise APIError("knowledgebase_id is required")
+
+        payload: dict[str, Any] = {
+            "knowledgebase_id": kb_id,
+            "page": page,
+            "page_size": page_size,
+        }
+        if file_type:
+            payload["type"] = file_type
+
+        return self.transport.request_json(
+            "POST", "/get/knowledgebase-file", json_body=payload
+        )
+
     def delete_file(self, kb_id: str, file_ids: list[str]) -> dict[str, Any]:
         """Delete files from a knowledge base."""
         if not kb_id:

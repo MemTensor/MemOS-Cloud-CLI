@@ -8,6 +8,7 @@ from memos_cli.commands.kb_cmd import (
     cmd_kb_create,
     cmd_kb_delete_file,
     cmd_kb_get_file,
+    cmd_kb_list_files,
     cmd_kb_remove,
 )
 
@@ -62,6 +63,18 @@ def kb_get_file(
 ):
     """Get knowledge base file details and processing status."""
     cmd_kb_get_file(file_ids_json=file_ids, output_format=output_format)
+
+
+@kb_app.command("list-file")
+def kb_list_file(
+    kb_id: str = typer.Option(..., "--kb-id", help="Knowledge base ID"),
+    file_type: str | None = typer.Option(None, "--type", help="Filter by type: document or skill"),
+    page: int = typer.Option(1, "--page", help="Page number (default: 1)"),
+    page_size: int = typer.Option(20, "--page-size", help="Items per page (default: 20)"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+):
+    """List files in a knowledge base with pagination."""
+    cmd_kb_list_files(kb_id=kb_id, file_type=file_type, page=page, page_size=page_size, output_format=output_format)
 
 
 @kb_app.command("delete-file")
