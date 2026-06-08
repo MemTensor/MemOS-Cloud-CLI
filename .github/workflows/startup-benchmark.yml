@@ -1,0 +1,106 @@
+name: startup-benchmark
+
+on:
+  workflow_dispatch:
+    inputs:
+      package:
+        description: "npm package spec to install"
+        required: true
+        default: "@memtensor/memos-cloud-cli@beta"
+      runs:
+        description: "number of memos --version runs"
+        required: true
+        default: "5"
+  push:
+    branches:
+      - user/jiangtao/feat_memos_agents_md_init
+    paths:
+      - ".github/workflows/startup-benchmark.yml"
+
+env:
+  PACKAGE_SPEC: ${{ github.event_name == 'workflow_dispatch' && inputs.package || '@memtensor/memos-cloud-cli@beta' }}
+  BENCHMARK_RUNS: ${{ github.event_name == 'workflow_dispatch' && inputs.runs || '5' }}
+
+jobs:
+  benchmark:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - macos-14
+          - ubuntu-22.04
+          - windows-2022
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install package
+        shell: pwsh
+        run: |
+          npm install -g "$env:PACKAGE_SPEC"
+          npm list -g --depth=0
+          Get-Command memos | Format-List *
+
+      - name: Benchmark memos startup
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $runs = [int]"$env:BENCHMARK_RUNS"
+          if ($runs -lt 1) {
+            throw "runs must be >= 1"
+          }
+
+          $rows = @()
+          for ($i = 1; $i -le $runs; $i++) {
+            $timer = [System.Diagnostics.Stopwatch]::StartNew()
+            $output = & memos --version
+            $exitCode = $LASTEXITCODE
+            $timer.Stop()
+
+            if ($exitCode -ne 0) {
+              throw "memos --version failed with exit code $exitCode"
+            }
+
+            $elapsed = [math]::Round($timer.Elapsed.TotalSeconds, 3)
+            $rows += [pscustomobject]@{
+              Run = $i
+              Seconds = $elapsed
+              Output = ($output -join "`n")
+            }
+            Write-Host "run=$i seconds=$elapsed output=$($output -join ' ')"
+          }
+
+          $seconds = @($rows | ForEach-Object { $_.Seconds })
+          $average = [math]::Round((($seconds | Measure-Object -Average).Average), 3)
+          $minimum = [math]::Round((($seconds | Measure-Object -Minimum).Minimum), 3)
+          $maximum = [math]::Round((($seconds | Measure-Object -Maximum).Maximum), 3)
+
+          $summaryPath = "startup-benchmark-${{ matrix.os }}.md"
+          @(
+            "# startup benchmark: ${{ matrix.os }}"
+            ""
+            "- package: $env:PACKAGE_SPEC"
+            "- runs: $runs"
+            "- average_seconds: $average"
+            "- min_seconds: $minimum"
+            "- max_seconds: $maximum"
+            ""
+            "| run | seconds | output |"
+            "| --- | ---: | --- |"
+          ) | Set-Content $summaryPath
+
+          foreach ($row in $rows) {
+            "| $($row.Run) | $($row.Seconds) | $($row.Output) |" | Add-Content $summaryPath
+          }
+
+          Get-Content $summaryPath | ForEach-Object { Add-Content $env:GITHUB_STEP_SUMMARY $_ }
+
+      - name: Upload benchmark result
+        uses: actions/upload-artifact@v4
+        with:
+          name: startup-benchmark-${{ matrix.os }}
+          path: startup-benchmark-${{ matrix.os }}.md

@@ -1,0 +1,55 @@
+name: release
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            build_script: ./scripts/build-binary.sh
+            upload_name: linux-x64
+          - os: windows-2022
+            build_script: ./scripts/build-binary.ps1
+            upload_name: windows-x64
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Build archive on Unix
+        if: runner.os != 'Windows'
+        run: bash ${{ matrix.build_script }}
+
+      - name: Build archive on Windows
+        if: runner.os == 'Windows'
+        run: pwsh -File ${{ matrix.build_script }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.upload_name }}
+          path: dist/*.tar.gz
+
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.tar.gz

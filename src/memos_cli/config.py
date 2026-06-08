@@ -1,0 +1,88 @@
+"""Configuration management for MemOS CLI."""
+from __future__ import annotations
+
+import os
+from pathlib import Path
+from pydantic import BaseModel, Field, ConfigDict
+import yaml
+
+DEFAULT_USER_ID = "memos-cli"
+DEFAULT_CONVERSATION_ID = "memos-cli-default"
+
+
+class PlatformConfig(BaseModel):
+    """Platform API configuration."""
+    api_key: str = ""
+    base_url: str = "https://memos.memtensor.cn/api/openmem/v1"
+
+
+class DefaultsConfig(BaseModel):
+    """Default entity IDs."""
+    user_id: str | None = DEFAULT_USER_ID
+    conversation_id: str | None = DEFAULT_CONVERSATION_ID
+    framework: str | None = None
+    agent_id: str | None = None
+    app_id: str | None = None
+    run_id: str | None = None
+
+
+class MemOSConfig(BaseModel):
+    """Main configuration model."""
+    platform: PlatformConfig = Field(default_factory=PlatformConfig)
+    defaults: DefaultsConfig = Field(default_factory=DefaultsConfig)
+
+    model_config = ConfigDict(validate_assignment=True)
+
+
+CONFIG_DIR = Path.home() / ".memos"
+CONFIG_FILE = CONFIG_DIR / "config.yaml"
+
+
+def load_config() -> MemOSConfig:
+    """Load configuration from file and environment variables."""
+    config = MemOSConfig()
+    
+    if CONFIG_FILE.exists():
+        try:
+            with open(CONFIG_FILE, "r") as f:
+                data = yaml.safe_load(f)
+                if data:
+                    config = MemOSConfig(**data)
+        except Exception:
+            pass
+    
+    # Environment variables override config file
+    if api_key := os.getenv("MEMOS_API_KEY"):
+        config.platform.api_key = api_key
+    if base_url := os.getenv("MEMOS_BASE_URL"):
+        config.platform.base_url = base_url
+    if user_id := os.getenv("MEMOS_USER_ID"):
+        config.defaults.user_id = user_id
+    if conversation_id := os.getenv("MEMOS_CONVERSATION_ID"):
+        config.defaults.conversation_id = conversation_id
+    if framework := os.getenv("MEMOS_FRAMEWORK"):
+        config.defaults.framework = framework
+    if agent_id := os.getenv("MEMOS_AGENT_ID"):
+        config.defaults.agent_id = agent_id
+    if app_id := os.getenv("MEMOS_APP_ID"):
+        config.defaults.app_id = app_id
+    if run_id := os.getenv("MEMOS_RUN_ID"):
+        config.defaults.run_id = run_id
+    
+    return config
+
+
+def save_config(config: MemOSConfig) -> None:
+    """Save configuration to file."""
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)
+    
+    with open(CONFIG_FILE, "w") as f:
+        yaml.dump(config.model_dump(), f, default_flow_style=False)
+    
+    # Set secure permissions
+    CONFIG_FILE.chmod(0o600)
+
+
+def get_config_path() -> Path:
+    """Get configuration file path."""
+    return CONFIG_FILE

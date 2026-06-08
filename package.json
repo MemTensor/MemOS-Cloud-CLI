@@ -1,0 +1,22 @@
+{
+  "name": "@memtensor/memos-cloud-cli",
+  "version": "1.0.2",
+  "description": "MemOS CLI - Universal memory interface for AI agents",
+  "license": "UNLICENSED",
+  "bin": {
+    "memos": "bin/memos.js"
+  },
+  "files": [
+    "bin",
+    "scripts"
+  ],
+  "engines": {
+    "node": ">=12"
+  },
+  "scripts": {
+    "prepublishOnly": "node scripts/prepublish-check.js",
+    "publish:beta": "npm publish --tag beta",
+    "publish:latest": "npm publish --tag latest",
+    "postinstall": "node scripts/postinstall.js"
+  }
+}
