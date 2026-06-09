@@ -17,21 +17,35 @@ MemOS-CLI/
 │   ├── telemetry.py         # 调用归因与遥测
 │   ├── backend/             # API 后端层
 │   │   ├── base.py          # 抽象基类
-│   │   └── memos_api.py     # MemOS Cloud API 实现
+│   │   ├── memos_api.py     # MemOS Cloud API 实现
+│   │   ├── message_api.py   # 消息 API
+│   │   └── kb_api.py        # 知识库 API
 │   └── commands/            # CLI 命令
 │       ├── init.py          # memos init
 │       ├── config_cmd.py    # memos config (show/get/set)
-│       └── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
+│       ├── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
+│       ├── memory_cmd.py    # 记忆命令执行层
+│       ├── message.py       # memos message / memos status
+│       ├── message_cmd.py   # 消息命令执行层
+│       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
+│       └── kb_cmd.py        # 知识库命令执行层
 ├── skills/
-│   ├── memos-memory/        # 记忆领域 skill（P0 命令）
-│   │   ├── SKILL.md         # Skill 入口与使用规范
-│   │   └── references/      # Skill 参考文档
-│   │       ├── memos-add.md
-│   │       ├── memos-chat.md
-│   │       ├── memos-delete.md
-│   │       ├── memos-extract.md
-│   │       ├── memos-get.md
-│   │       └── memos-search.md
+│   └── memos-memory/        # 记忆领域 skill
+│       ├── SKILL.md         # Skill 入口与使用规范
+│       └── references/      # Skill 参考文档
+│           ├── memos-add.md
+│           ├── memos-chat.md
+│           ├── memos-delete.md
+│           ├── memos-extract.md
+│           ├── memos-get.md
+│           ├── memos-origin.md
+│           ├── memos-search.md
+│           ├── memos-kb-create.md
+│           ├── memos-kb-remove.md
+│           ├── memos-kb-add-file.md
+│           ├── memos-kb-get-file.md
+│           ├── memos-kb-list-file.md
+│           └── memos-kb-delete-file.md
 ├── pyproject.toml
 ├── package.json
 ├── bin/
@@ -82,6 +96,13 @@ memos init --agent codex
 - `--agent claude` → `~/.claude/skills/memos/`
 - `--agent openclaw` → `~/.openclaw/skills/memos/`
 - `--agent hermes` → `~/.hermes/skills/memos/`
+- `--agent trae` → `~/.trae/skills/memos/`
+- `--agent trae-cn` → `~/.trae-cn/skills/memos/`
+- `--agent opencode` → `~/.config/opencode/skills/memos/`
+- `--agent antigravity` → `~/.gemini/antigravity/skills/memos/`
+- `--agent workbuddy` → `~/.codebuddy/skills/memos/`
+- `--agent cline` → `~/.cline/skills/memos/`
+- `--agent copilot` → `~/.copilot/skills/memos/`
 
 也可以直接带参数：
 

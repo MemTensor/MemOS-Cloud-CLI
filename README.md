@@ -17,21 +17,35 @@ MemOS-CLI/
 │   ├── telemetry.py         # Telemetry reporting
 │   ├── backend/             # API backend layer
 │   │   ├── base.py          # Abstract base class
-│   │   └── memos_api.py     # MemOS Cloud API implementation
+│   │   ├── memos_api.py     # MemOS Cloud API implementation
+│   │   ├── message_api.py   # Message API
+│   │   └── kb_api.py        # Knowledge base API
 │   └── commands/            # CLI commands
 │       ├── init.py          # memos init
 │       ├── config_cmd.py    # memos config (show/get/set)
-│       └── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
+│       ├── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
+│       ├── memory_cmd.py    # Memory command execution layer
+│       ├── message.py       # memos message / memos status
+│       ├── message_cmd.py   # Message command execution layer
+│       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
+│       └── kb_cmd.py        # Knowledge base command execution layer
 ├── skills/
-│   ├── memos-memory/        # Memory domain skill (P0 commands)
-│   │   ├── SKILL.md         # Skill entry and usage protocol
-│   │   └── references/      # Skill reference docs
-│   │       ├── memos-add.md
-│   │       ├── memos-chat.md
-│   │       ├── memos-delete.md
-│   │       ├── memos-extract.md
-│   │       ├── memos-get.md
-│   │       └── memos-search.md
+│   └── memos-memory/        # Memory domain skill
+│       ├── SKILL.md         # Skill entry and usage protocol
+│       └── references/      # Skill reference docs
+│           ├── memos-add.md
+│           ├── memos-chat.md
+│           ├── memos-delete.md
+│           ├── memos-extract.md
+│           ├── memos-get.md
+│           ├── memos-origin.md
+│           ├── memos-search.md
+│           ├── memos-kb-create.md
+│           ├── memos-kb-remove.md
+│           ├── memos-kb-add-file.md
+│           ├── memos-kb-get-file.md
+│           ├── memos-kb-list-file.md
+│           └── memos-kb-delete-file.md
 ├── pyproject.toml
 ├── package.json
 ├── bin/
@@ -84,6 +98,13 @@ Supported targets:
 - `--agent claude` → `~/.claude/skills/memos/`
 - `--agent openclaw` → `~/.openclaw/skills/memos/`
 - `--agent hermes` → `~/.hermes/skills/memos/`
+- `--agent trae` → `~/.trae/skills/memos/`
+- `--agent trae-cn` → `~/.trae-cn/skills/memos/`
+- `--agent opencode` → `~/.config/opencode/skills/memos/`
+- `--agent antigravity` → `~/.gemini/antigravity/skills/memos/`
+- `--agent workbuddy` → `~/.codebuddy/skills/memos/`
+- `--agent cline` → `~/.cline/skills/memos/`
+- `--agent copilot` → `~/.copilot/skills/memos/`
 
 Or with arguments:
 
