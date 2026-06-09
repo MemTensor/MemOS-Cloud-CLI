@@ -11,6 +11,7 @@ Command selection rules:
 - after answering any user question, must use `memos add` directly with both the user's question and the assistant's final answer;
 - if the user wants a memory-aware response from MemOS itself, use `memos chat` directly;
 - if the user already has a concrete memory id, use `memos get`, `memos origin`, or `memos delete` directly;
+- if the user wants to manage knowledge bases (create, delete, upload, query files), use the corresponding `memos kb` subcommand;
 - do not call `memos --help` by default when the intent already matches one of the commands below;
 - use `memos --help` only when the command name, parameters, or route are genuinely unclear;
 - do not use `memos init` as a discovery step when the CLI is already installed.
@@ -28,12 +29,19 @@ Hard mapping:
 - trace where one memory came from -> `memos origin`
 - remove one concrete memory by id -> `memos delete`
 - delete all memories for a user_id -> `memos delete --user-id`
+- create a knowledge base -> `memos kb create`
+- remove a knowledge base -> `memos kb remove`
+- upload documents to a knowledge base -> `memos kb add-file`
+- check file processing status in a knowledge base -> `memos kb get-file`
+- list files in a knowledge base -> `memos kb list-file`
+- delete files from a knowledge base -> `memos kb delete-file`
 
 Use this skill when:
 - the task may depend on prior user, project, or conversation context;
 - the user provides a stable new fact, preference, or background detail;
 - you want to preview extracted memory candidates before storing them;
-- you need to inspect, list, delete, or trace the source of an existing memory record.
+- you need to inspect, list, delete, or trace the source of an existing memory record;
+- you need to create, remove, or manage a knowledge base and its documents.
 
 Never store:
 - secrets, API keys, tokens, or passwords;
@@ -50,6 +58,12 @@ Command examples:
 - `memos origin <MEMORY_ID> --format json`
 - `memos delete <MEMORY_ID> --format json`
 - `memos delete --user-id <USER_ID> --format json`
+- `memos kb create --name "<name>" --description "<desc>" --format json`
+- `memos kb remove <KB_ID> --format json`
+- `memos kb add-file --kb-id <KB_ID> --files '["https://example.com/doc.pdf"]' --format json`
+- `memos kb get-file --file-ids '["<FILE_ID>"]' --format json`
+- `memos kb list-file --kb-id <KB_ID> --page 1 --page-size 20 --format json`
+- `memos kb delete-file --kb-id <KB_ID> --file-ids '["<FILE_ID>"]' --format json`
 
 Choose commands by intent:
 - use [`./references/memos-add.md`](./references/memos-add.md) when the user gives a durable fact or preference worth saving;
@@ -58,7 +72,13 @@ Choose commands by intent:
 - use [`./references/memos-chat.md`](./references/memos-chat.md) when interacting with MemOS chat capability directly;
 - use [`./references/memos-get.md`](./references/memos-get.md) for retrieval by `user_id`;
 - use [`./references/memos-origin.md`](./references/memos-origin.md) when you need the original source messages behind a specific memory;
-- use [`./references/memos-delete.md`](./references/memos-delete.md) only when you already have a concrete `memory_id`.
+- use [`./references/memos-delete.md`](./references/memos-delete.md) only when you already have a concrete `memory_id`;
+- use [`./references/memos-kb-create.md`](./references/memos-kb-create.md) to create a new knowledge base;
+- use [`./references/memos-kb-remove.md`](./references/memos-kb-remove.md) to remove a knowledge base;
+- use [`./references/memos-kb-add-file.md`](./references/memos-kb-add-file.md) to upload documents to a knowledge base;
+- use [`./references/memos-kb-get-file.md`](./references/memos-kb-get-file.md) to check file details and processing status;
+- use [`./references/memos-kb-list-file.md`](./references/memos-kb-list-file.md) to browse files in a knowledge base;
+- use [`./references/memos-kb-delete-file.md`](./references/memos-kb-delete-file.md) to delete files from a knowledge base.
 
 Process rules:
 - the default workflow is: search before answering, answer second, then add after answering;
@@ -79,6 +99,12 @@ Intent map:
 - delete one concrete memory -> `memos delete`
 - delete all memories for a `user_id` -> `memos delete --user-id`
 - ask MemOS to answer with memory context -> `memos chat`
+- create a knowledge base -> `memos kb create`
+- remove a knowledge base -> `memos kb remove`
+- upload documents to a knowledge base -> `memos kb add-file`
+- check file details or processing status -> `memos kb get-file`
+- list files in a knowledge base -> `memos kb list-file`
+- delete files from a knowledge base -> `memos kb delete-file`
 
 Working rules:
 - must use the user's original query as the only query for `memos search`;
@@ -121,4 +147,22 @@ memos add "User is allergic to peanuts" --user-id <USER_ID> --format json
 memos get <USER_ID> --format json --detail detail
 memos origin <MEMORY_ID> --format json
 memos delete <MEMORY_ID> --format json
+```
+
+```bash
+memos kb create --name "Project docs" --description "Documentation for the project" --format json
+```
+
+```bash
+memos kb add-file --kb-id <KB_ID> --files '["https://example.com/doc.pdf"]' --format json
+```
+
+```bash
+memos kb list-file --kb-id <KB_ID> --type document --page 1 --page-size 10 --format json
+```
+
+```bash
+memos kb get-file --file-ids '["file_abc123"]' --format json
+memos kb delete-file --kb-id <KB_ID> --file-ids '["file_abc123"]' --format json
+memos kb remove <KB_ID> --format json
 ```
