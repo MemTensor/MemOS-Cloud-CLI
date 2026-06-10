@@ -235,10 +235,7 @@ def _remove_guidance_block(path: Path) -> bool:
     end = existing.index(GUIDANCE_END) + len(GUIDANCE_END)
     updated = f"{existing[:start].rstrip()}\n\n{existing[end:].lstrip()}".strip()
 
-    if updated:
-        path.write_text(updated + "\n", encoding="utf-8")
-    else:
-        path.unlink()
+    path.write_text((updated + "\n") if updated else "", encoding="utf-8")
     return True
 
 
@@ -270,13 +267,13 @@ def _build_standalone_guidance(agent: str, *, memos_plugin: bool = False) -> str
 
 
 def _remove_standalone_guidance(path: Path) -> bool:
-    """Remove a standalone guidance file when it is MemOS-managed."""
+    """Clear a standalone guidance file when it is MemOS-managed."""
     if not path.exists():
         return False
     content = path.read_text(encoding="utf-8")
     if not content.startswith(STANDALONE_FRONTMATTER):
         return False
-    path.unlink()
+    path.write_text("", encoding="utf-8")
     return True
 
 

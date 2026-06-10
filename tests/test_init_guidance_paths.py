@@ -147,7 +147,7 @@ class GuidancePathResolutionTests(unittest.TestCase):
             self.assertEqual(removed, [guidance])
             self.assertEqual(guidance.read_text(encoding="utf-8"), "keep before\n\nkeep after\n")
 
-    def test_uninstall_guidance_removes_empty_managed_file(self) -> None:
+    def test_uninstall_guidance_keeps_empty_managed_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
             supported = {"cursor": root / ".cursor" / "skills"}
@@ -162,7 +162,8 @@ class GuidancePathResolutionTests(unittest.TestCase):
                 removed = init._uninstall_agent_guidance("cursor")
 
             self.assertEqual(removed, [guidance])
-            self.assertFalse(guidance.exists())
+            self.assertTrue(guidance.exists())
+            self.assertEqual(guidance.read_text(encoding="utf-8"), "")
 
     def test_remove_bundled_skills_removes_memos_memory_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -178,6 +179,17 @@ class GuidancePathResolutionTests(unittest.TestCase):
             self.assertEqual(removed, [installed])
             self.assertFalse(installed.exists())
             self.assertFalse((root / ".cursor" / "skills" / "memos").exists())
+
+    def test_uninstall_standalone_guidance_keeps_empty_file(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            path = Path(temp_dir) / "memos.md"
+            path.write_text(f"{init.STANDALONE_FRONTMATTER}managed\n", encoding="utf-8")
+
+            removed = init._remove_standalone_guidance(path)
+
+            self.assertTrue(removed)
+            self.assertTrue(path.exists())
+            self.assertEqual(path.read_text(encoding="utf-8"), "")
 
 
 if __name__ == "__main__":
