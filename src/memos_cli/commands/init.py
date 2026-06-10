@@ -57,7 +57,8 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "opencode":    AgentConfig(Path.home() / ".config" / "opencode" / "skills",      "AGENTS.md"),
     "antigravity": AgentConfig(Path.home() / ".gemini" / "antigravity" / "skills",   "GEMINI.md", Path.home() / ".gemini"),
     "workbuddy":   AgentConfig(Path.home() / ".codebuddy" / "skills",                "CODEBUDDY.md"),
-    "cline":       AgentConfig(Path.home() / ".cline" / "skills",                    "AGENTS.md", Path.home() / ".agents"),
+    "cline":       AgentConfig(Path.home() / ".cline" / "skills",                    "memos.md", 
+                               Path.home() / ".cline" / "rules", "standalone"),
     "copilot":     AgentConfig(Path.home() / ".copilot" / "skills",                  "copilot-instructions.md"),
 }
 
