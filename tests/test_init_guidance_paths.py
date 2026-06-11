@@ -218,7 +218,7 @@ class InitConfigResolutionTests(unittest.TestCase):
 
             def fake_prompt(prompt: str, **kwargs):
                 prompts.append(prompt)
-                return kwargs.get("default", "")
+                return ""
 
             def fake_save_config(config: MemOSConfig) -> None:
                 saved_configs.append(config)
@@ -297,7 +297,7 @@ class InitConfigResolutionTests(unittest.TestCase):
             def fake_prompt(prompt: str, **kwargs):
                 if "API key" in prompt:
                     return "entered-api-key"
-                return kwargs.get("default", "")
+                return ""
 
             def fake_save_config(config: MemOSConfig) -> None:
                 saved_configs.append(config)

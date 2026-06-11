@@ -402,16 +402,24 @@ def _prompt_existing_config_values(
             )
 
     if not user_id:
-        user_id = Prompt.ask(
-            "Default user ID",
-            default=config.defaults.user_id or DEFAULT_USER_ID,
+        current_user_id = config.defaults.user_id or DEFAULT_USER_ID
+        entered_user_id = Prompt.ask(
+            f"Default user ID [dim](current: {current_user_id})[/]",
+            default="",
+            show_default=False,
         )
+        user_id = entered_user_id or current_user_id
 
     if not conversation_id:
-        conversation_id = Prompt.ask(
-            "Default conversation ID",
-            default=config.defaults.conversation_id or DEFAULT_CONVERSATION_ID,
+        current_conversation_id = (
+            config.defaults.conversation_id or DEFAULT_CONVERSATION_ID
         )
+        entered_conversation_id = Prompt.ask(
+            f"Default conversation ID [dim](current: {current_conversation_id})[/]",
+            default="",
+            show_default=False,
+        )
+        conversation_id = entered_conversation_id or current_conversation_id
 
     return (
         api_key,
