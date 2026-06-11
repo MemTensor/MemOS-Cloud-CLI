@@ -1,6 +1,8 @@
 """Response normalizers for MemOS API payloads."""
 from __future__ import annotations
 
+from typing import Any
+
 
 def normalize_add_response(data: dict, *, original_text: str) -> dict:
     """Normalize add response to a stable CLI shape."""
@@ -231,14 +233,41 @@ def normalize_tool_memory_item(item: dict) -> dict:
     return normalized
 
 
+def _coerce_skill_text(value: Any) -> str:
+    """Render a skill_value field (str, list, dict, or scalar) as display text.
+
+    The official API may return structured fields such as a list-typed
+    ``procedure``; coercing here keeps ``" | ".join`` from raising
+    ``TypeError: sequence item N: expected str instance, list found``.
+    """
+    if value is None:
+        return ""
+    if isinstance(value, (list, tuple)):
+        return "; ".join(_coerce_skill_text(part) for part in value if part not in (None, ""))
+    if isinstance(value, dict):
+        return "; ".join(
+            f"{key}: {_coerce_skill_text(val)}"
+            for key, val in value.items()
+            if val not in (None, "")
+        )
+    return str(value)
+
+
+def build_skill_memory_text(skill_value: dict) -> str:
+    """Build the display ``memory`` string for a skill record from its skill_value."""
+    parts = (
+        _coerce_skill_text(skill_value.get("name", "")),
+        _coerce_skill_text(skill_value.get("description", "")),
+        _coerce_skill_text(skill_value.get("procedure", "")),
+    )
+    return " | ".join(part for part in parts if part)
+
+
 def normalize_skill_item(item: dict) -> dict:
     """Normalize a skill-memory record into memory shape."""
     normalized = dict(item)
     skill_value = item.get("skill_value", {}) if isinstance(item.get("skill_value"), dict) else {}
-    name = skill_value.get("name", "")
-    description = skill_value.get("description", "")
-    procedure = skill_value.get("procedure", "")
-    normalized["memory"] = " | ".join(part for part in (name, description, procedure) if part)
+    normalized["memory"] = build_skill_memory_text(skill_value)
     normalized.setdefault("memory_type", item.get("skill_type", "skill"))
     if normalized.get("created_at") is None and normalized.get("create_time") is not None:
         normalized["created_at"] = normalized["create_time"]

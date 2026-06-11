@@ -8,6 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
+from memos_cli.backend.normalizers import build_skill_memory_text
 from memos_cli.branding import ACCENT_COLOR, BRAND_COLOR, DIM_COLOR
 
 
@@ -85,13 +86,7 @@ def _normalize_display_item(item_kind: str, item: dict[str, Any]) -> dict[str, A
         normalized.setdefault("memory_type", item.get("tool_type", "tool_memory"))
     elif item_kind == "skill":
         skill_value = item.get("skill_value", {}) if isinstance(item.get("skill_value"), dict) else {}
-        normalized["memory"] = " | ".join(
-            part for part in (
-                skill_value.get("name", ""),
-                skill_value.get("description", ""),
-                skill_value.get("procedure", ""),
-            ) if part
-        )
+        normalized["memory"] = build_skill_memory_text(skill_value)
         normalized.setdefault("id", item.get("skill_id") or item.get("id"))
         normalized.setdefault("memory_type", item.get("skill_type", "skill"))
     else:
