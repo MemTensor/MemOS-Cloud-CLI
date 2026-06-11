@@ -38,6 +38,38 @@ CONFIG_DIR = Path.home() / ".memos"
 CONFIG_FILE = CONFIG_DIR / "config.yaml"
 
 
+def _string_or_none(value) -> str | None:
+    """Normalize config scalar values while preserving missing/null values."""
+    if value is None:
+        return None
+    return str(value)
+
+
+def _load_file_config(data) -> MemOSConfig:
+    """Load a config dict without letting one invalid value discard the whole file."""
+    config = MemOSConfig()
+    if not isinstance(data, dict):
+        return config
+
+    platform_data = data.get("platform")
+    if isinstance(platform_data, dict):
+        api_key = _string_or_none(platform_data.get("api_key"))
+        if api_key is not None:
+            config.platform.api_key = api_key
+
+        base_url = _string_or_none(platform_data.get("base_url"))
+        if base_url is not None:
+            config.platform.base_url = base_url
+
+    defaults_data = data.get("defaults")
+    if isinstance(defaults_data, dict):
+        for key in DefaultsConfig.model_fields:
+            if key in defaults_data:
+                setattr(config.defaults, key, _string_or_none(defaults_data.get(key)))
+
+    return config
+
+
 def load_config() -> MemOSConfig:
     """Load configuration from file and environment variables."""
     config = MemOSConfig()
@@ -47,7 +79,7 @@ def load_config() -> MemOSConfig:
             with open(CONFIG_FILE, "r") as f:
                 data = yaml.safe_load(f)
                 if data:
-                    config = MemOSConfig(**data)
+                    config = _load_file_config(data)
         except Exception:
             pass
     
