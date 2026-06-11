@@ -26,6 +26,7 @@ env/
 ENV/
 .venv
 .venv-dev/
+.venv-build/
 
 # IDE
 .idea/
