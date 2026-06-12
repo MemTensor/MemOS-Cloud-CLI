@@ -63,6 +63,18 @@ class MemOSTransport:
             return ["Token"]
         return ["Token", "Bearer"]
 
+    def _tracking_body(self, json_body: Any) -> Any:
+        """Add source metadata to JSON object bodies while preserving caller fields."""
+        if not isinstance(json_body, dict):
+            return json_body
+
+        source = build_source_identifier(self.framework)
+        tracked_body = dict(json_body)
+        tracked_body.setdefault("source", source)
+        if self.framework:
+            tracked_body.setdefault("framework", self.framework)
+        return tracked_body
+
     def _build_url(self, path: str) -> str:
         """Join base URL and route path while avoiding duplicate version segments."""
         parsed = urlsplit(self.base_url)
@@ -101,7 +113,7 @@ class MemOSTransport:
                         include_tracking_headers=include_tracking_headers,
                         extra_headers=extra_headers,
                     ),
-                    json=json_body,
+                    json=self._tracking_body(json_body),
                     params=params,
                     timeout=timeout,
                 )

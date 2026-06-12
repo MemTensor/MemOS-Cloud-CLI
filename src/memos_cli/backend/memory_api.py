@@ -27,6 +27,7 @@ class MemoryAPI:
 
     def ping(self, timeout: float = 5.0) -> dict[str, Any]:
         """Ping the API to validate credentials."""
+        last_error: Exception | None = None
         for method, path in (("GET", "/v1/ping/"), ("GET", "/ping"), ("POST", "/search/memory")):
             try:
                 if method == "POST":
@@ -43,8 +44,14 @@ class MemoryAPI:
                 return self.transport.request_json(method, path, timeout=timeout)
             except AuthError:
                 raise
-            except Exception:
+            except Exception as exc:
+                last_error = exc
                 continue
+        if last_error is not None:
+            raise APIError(
+                "Unable to reach MemOS API with the configured base URL. "
+                f"Last error: {last_error}"
+            ) from last_error
         raise APIError("Unable to reach MemOS API with the configured base URL")
 
     def add_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
