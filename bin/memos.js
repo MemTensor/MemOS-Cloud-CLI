@@ -7,9 +7,20 @@ const { existsSync } = require("fs");
 const path = require("path");
 
 const exeName = process.platform === "win32" ? "memos.exe" : "memos";
-const binaryPath = path.join(__dirname, "..", "bin", exeName);
+const binDir = path.join(__dirname, "..", "bin");
 
-if (!existsSync(binaryPath)) {
+// PyInstaller onedir layout: bin/memos/<exeName>. The legacy pre-fix
+// layout (single-file onefile drop) was bin/<exeName>. Prefer onedir; keep
+// the fallback for cached npm installs that still carry the old file.
+const onedirBinaryPath = path.join(binDir, "memos", exeName);
+const legacyBinaryPath = path.join(binDir, exeName);
+
+let binaryPath;
+if (existsSync(onedirBinaryPath)) {
+  binaryPath = onedirBinaryPath;
+} else if (existsSync(legacyBinaryPath)) {
+  binaryPath = legacyBinaryPath;
+} else {
   console.error("MemOS CLI binary is not installed.");
   console.error("Reinstall the package to download the platform binary.");
   process.exit(1);

@@ -33,14 +33,21 @@ STAGE_DIR="${BUILD_DIR}/package/${TARGET}"
 ARCHIVE_BASENAME="memos-${VERSION}-${TARGET}"
 ARCHIVE_PATH="${DIST_DIR}/${ARCHIVE_BASENAME}.tar.gz"
 
-rm -rf "${BUILD_DIR}" "${ROOT_DIR}/dist/memos"
+rm -rf "${BUILD_DIR}" "${DIST_DIR}/memos"
 mkdir -p "${STAGE_DIR}" "${DIST_DIR}"
 
 python -m pip install -e "${ROOT_DIR}[build]"
 python -m PyInstaller --clean --noconfirm "${ROOT_DIR}/memos.spec"
 
-cp "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
-chmod +x "${STAGE_DIR}/memos"
+# PyInstaller onedir produces dist/memos/ (a folder), not dist/memos (a file).
+# We stage the folder as-is and archive it under the top-level name "memos/".
+if [[ ! -d "${DIST_DIR}/memos" ]]; then
+  echo "Expected onedir output at ${DIST_DIR}/memos but did not find it" >&2
+  exit 1
+fi
+
+cp -R "${DIST_DIR}/memos" "${STAGE_DIR}/memos"
+chmod +x "${STAGE_DIR}/memos/memos"
 
 if [[ "${PLATFORM}" == "darwin" ]]; then
   xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
@@ -48,5 +55,5 @@ fi
 
 tar -czf "${ARCHIVE_PATH}" -C "${STAGE_DIR}" memos
 
-echo "Built binary: ${ROOT_DIR}/dist/memos"
+echo "Built binary folder: ${DIST_DIR}/memos"
 echo "Built archive: ${ARCHIVE_PATH}"

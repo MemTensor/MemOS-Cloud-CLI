@@ -23,6 +23,8 @@ const downloadUrl =
 const installDir = path.join(__dirname, "..", "bin");
 const archivePath = path.join(os.tmpdir(), assetName);
 const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
+const onedirDir = path.join(installDir, "memos");
+const onedirBinaryPath = path.join(onedirDir, binaryName);
 
 fs.mkdirSync(installDir, { recursive: true });
 
@@ -31,10 +33,15 @@ if (!downloadUrl) {
   process.exit(1);
 }
 
+// The archive now ships a top-level `memos/` folder (PyInstaller onedir).
+// Clean out any prior onedir folder plus the legacy single-file drop from
+// pre-fix installs before extraction so the two layouts do not collide.
+cleanPreviousInstall(installDir, binaryName);
+
 download(downloadUrl, archivePath)
   .then(() => extractArchive(archivePath, installDir))
-  .then(() => clearQuarantine(path.join(installDir, binaryName)))
-  .then(() => makeExecutable(path.join(installDir, binaryName)))
+  .then(() => clearQuarantine(onedirDir))
+  .then(() => makeExecutable(onedirBinaryPath))
   .catch((error) => {
     console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
     console.error(error.message);
@@ -60,6 +67,21 @@ function resolveTarget() {
   }
 
   return `${platform}-${arch}`;
+}
+
+function cleanPreviousInstall(dir, binaryName) {
+  // Remove a pre-existing onedir folder from a previous install so tar
+  // never merges old and new contents.
+  const previousOnedir = path.join(dir, "memos");
+  if (fs.existsSync(previousOnedir) && fs.statSync(previousOnedir).isDirectory()) {
+    fs.rmSync(previousOnedir, { recursive: true, force: true });
+  }
+  // Remove a legacy single-file drop from pre-fix installs so it does not
+  // shadow the new folder layout or leave stale bytes on disk.
+  const legacyFile = path.join(dir, binaryName);
+  if (fs.existsSync(legacyFile) && fs.statSync(legacyFile).isFile()) {
+    fs.rmSync(legacyFile, { force: true });
+  }
 }
 
 function download(url, destination) {
@@ -111,13 +133,18 @@ function makeExecutable(filePath) {
   }
 }
 
-function clearQuarantine(filePath) {
+function clearQuarantine(targetPath) {
   if (process.platform !== "darwin") {
+    return Promise.resolve();
+  }
+  if (!fs.existsSync(targetPath)) {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
-    const child = spawn("xattr", ["-dr", "com.apple.quarantine", filePath], {
+    // `-r` recurses into the onedir folder so every bundled dylib / data
+    // file loses the quarantine bit, not just the entry executable.
+    const child = spawn("xattr", ["-dr", "com.apple.quarantine", targetPath], {
       stdio: "ignore",
     });
 
