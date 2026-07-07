@@ -7,13 +7,17 @@ Python silently mis-decodes it as GBK. The mis-decoded string is then encoded
 to UTF-8 in the outgoing HTTP body, so the API receives double-encoded /
 irreversibly corrupted CJK.
 
-``configure_stdio_utf8`` runs at import time (see ``memos_cli/__init__.py``)
-so it takes effect before Rich's :class:`~rich.console.Console` — which pins
-its encoding from ``sys.stdout`` at construction — is instantiated anywhere
-in the package.
+``configure_stdio_utf8`` is called from CLI entry-points (``memos_cli.__main__``
+and ``memos_cli.main``) so it takes effect before Rich's
+:class:`~rich.console.Console` — which pins its encoding from ``sys.stdout``
+at construction — is instantiated anywhere in the package. It is
+deliberately *not* invoked from ``memos_cli/__init__.py`` so that library
+consumers that only import the package for its models/utilities are not
+subject to global stdio mutation.
 """
 from __future__ import annotations
 
+import codecs
 import io
 import os
 import sys
@@ -21,7 +25,10 @@ import warnings
 from typing import Iterable
 
 _STREAM_NAMES: tuple[str, ...] = ("stdin", "stdout", "stderr")
-_UTF8_ALIASES = frozenset({"utf-8", "utf_8", "utf8", "UTF-8", "UTF_8", "UTF8"})
+# ``codecs.lookup`` normalises every UTF-8 alias (utf8, utf-8, UTF_8, and any
+# platform-specific variant) to a single canonical name, so the idempotency
+# guard below stays correct without maintaining a hardcoded alias list.
+_UTF8_CANONICAL = codecs.lookup("utf-8").name
 
 
 def _errors_for(name: str) -> str:
@@ -72,9 +79,16 @@ def _is_already_utf8(stream: object, errors: str) -> bool:
 
     Guards true idempotency: repeat calls skip reconfigure entirely, and the
     fallback rewrap path never double-wraps an already-wrapped TextIOWrapper.
+    Uses :func:`codecs.lookup` so any UTF-8 alias Python may report
+    (``utf-8``, ``utf_8``, ``utf8``, ``UTF-8`` …) is recognised uniformly.
     """
     encoding = getattr(stream, "encoding", None)
-    if not isinstance(encoding, str) or encoding not in _UTF8_ALIASES:
+    if not isinstance(encoding, str):
+        return False
+    try:
+        if codecs.lookup(encoding).name != _UTF8_CANONICAL:
+            return False
+    except LookupError:
         return False
     existing = getattr(stream, "errors", None)
     return existing == errors
@@ -82,6 +96,11 @@ def _is_already_utf8(stream: object, errors: str) -> bool:
 
 def _switch_windows_console_to_utf8() -> None:
     """Best-effort switch of the Windows console codepage to CP_UTF8 (65001)."""
+    # Pre-initialise the return codes so a partial failure (e.g. an exception
+    # thrown between the two Win32 calls) cannot leave one variable unbound
+    # for the post-try warning check.
+    rc_out = 0
+    rc_in = 0
     try:
         import ctypes  # local import so non-Windows platforms never touch it
 
@@ -129,6 +148,16 @@ def _rewrap_stream(
     ``TextIOWrapper.reconfigure`` does internally — so those environments
     still get UTF-8 stdio.
     """
+    # Flush any buffered writes on the original wrapper before we hand its
+    # underlying binary buffer to a fresh TextIOWrapper — otherwise pending
+    # bytes still sitting in the old wrapper's write buffer would be lost
+    # once the caller starts writing through the replacement wrapper.
+    flush = getattr(stream, "flush", None)
+    if callable(flush):
+        try:
+            flush()
+        except Exception:
+            pass
     buffer = getattr(stream, "buffer", None)
     if buffer is None:
         return None

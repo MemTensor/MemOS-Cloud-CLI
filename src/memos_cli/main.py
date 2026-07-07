@@ -1,19 +1,27 @@
 """Main CLI application — the entrypoint for `memos`."""
 from __future__ import annotations
 
-import click
-import typer
-from rich.console import Console
-from typer.core import TyperGroup
+# UTF-8 stdio bootstrap must run *before* any import that constructs a Rich
+# ``Console`` at module scope (Rich pins the encoding from ``sys.stdout`` at
+# construction time). ``configure_stdio_utf8`` is idempotent so it is safe
+# to call again from ``__main__`` / test suites.
+from memos_cli._encoding import configure_stdio_utf8
 
-from memos_cli import __version__
-from memos_cli.completion import register_completion_compat
-from memos_cli.commands.init import init_cmd, uninstall_cmd
-from memos_cli.commands.config_cmd import config_app
-from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, delete, origin
-from memos_cli.commands.message import message, status
-from memos_cli.commands.kb import kb_app
-from memos_cli.state import set_runtime_options
+configure_stdio_utf8()
+
+import click  # noqa: E402 — must follow the stdio bootstrap.
+import typer  # noqa: E402
+from rich.console import Console  # noqa: E402
+from typer.core import TyperGroup  # noqa: E402
+
+from memos_cli import __version__  # noqa: E402
+from memos_cli.completion import register_completion_compat  # noqa: E402
+from memos_cli.commands.init import init_cmd, uninstall_cmd  # noqa: E402
+from memos_cli.commands.config_cmd import config_app  # noqa: E402
+from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, delete, origin  # noqa: E402
+from memos_cli.commands.message import message, status  # noqa: E402
+from memos_cli.commands.kb import kb_app  # noqa: E402
+from memos_cli.state import set_runtime_options  # noqa: E402
 console = Console()
 err_console = Console(stderr=True)
 

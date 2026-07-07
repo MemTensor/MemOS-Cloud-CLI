@@ -11,23 +11,24 @@ from memos_cli.config import MemOSConfig, load_config, save_config
 # ``load_config`` overlays these env vars on top of file values, so tests
 # that assert the file's CJK content must scrub them from the environment
 # — otherwise a CI runner that happens to export ``MEMOS_USER_ID=alice``
-# would silently mask the encoding bug we're guarding against.
-_ENV_OVERRIDES_TO_CLEAR = {
-    "MEMOS_USER_ID": "",
-    "MEMOS_CONVERSATION_ID": "",
-    "MEMOS_API_KEY": "",
-    "MEMOS_BASE_URL": "",
-    "MEMOS_FRAMEWORK": "",
-    "MEMOS_AGENT_ID": "",
-    "MEMOS_APP_ID": "",
-    "MEMOS_RUN_ID": "",
-}
+# would silently mask the encoding bug we're guarding against. A frozenset
+# makes the key-only intent unambiguous: a future maintainer cannot
+# accidentally pass this as a ``patch.dict`` payload and *set* the vars.
+_ENV_OVERRIDES_TO_CLEAR: frozenset[str] = frozenset({
+    "MEMOS_USER_ID",
+    "MEMOS_CONVERSATION_ID",
+    "MEMOS_API_KEY",
+    "MEMOS_BASE_URL",
+    "MEMOS_FRAMEWORK",
+    "MEMOS_AGENT_ID",
+    "MEMOS_APP_ID",
+    "MEMOS_RUN_ID",
+})
 
 
-def _isolated_env() -> dict[str, str]:
-    """Return an env dict with MEMOS_* overlays cleared."""
-    scrubbed = {k: v for k, v in os.environ.items() if k not in _ENV_OVERRIDES_TO_CLEAR}
-    return scrubbed
+def _env_without_memos_overrides() -> dict[str, str]:
+    """Return ``os.environ`` with all MEMOS_* override keys stripped."""
+    return {k: v for k, v in os.environ.items() if k not in _ENV_OVERRIDES_TO_CLEAR}
 
 
 class ConfigUtf8RoundTripTests(unittest.TestCase):
@@ -44,20 +45,27 @@ class ConfigUtf8RoundTripTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.yaml"
             config_file.write_bytes(
-                "defaults:\n"
-                "  user_id: 测试用户\n"
-                "  conversation_id: 会话-1\n"
-                "platform:\n"
-                "  api_key: token-x\n"
-                "  base_url: https://example.test/api\n".encode("utf-8")
+                """\
+defaults:
+  user_id: 测试用户
+  conversation_id: 会话-1
+platform:
+  api_key: token-x
+  base_url: https://example.test/api
+""".encode("utf-8")
             )
 
             with patch("memos_cli.config.CONFIG_FILE", config_file), \
-                    patch.dict(os.environ, _isolated_env(), clear=True):
+                    patch.dict(os.environ, _env_without_memos_overrides(), clear=True):
                 config = load_config()
 
             self.assertEqual(config.defaults.user_id, "测试用户")
             self.assertEqual(config.defaults.conversation_id, "会话-1")
+            # Cross-check ASCII fields so a regression where load_config
+            # silently returns a default MemOSConfig() cannot pass by
+            # accident — the file must have actually been parsed.
+            self.assertEqual(config.platform.api_key, "token-x")
+            self.assertEqual(config.platform.base_url, "https://example.test/api")
 
     def test_save_config_writes_cjk_values_as_utf8_bytes(self) -> None:
         """Write path: raw file bytes must contain UTF-8-encoded CJK."""
@@ -92,11 +100,15 @@ class ConfigUtf8RoundTripTests(unittest.TestCase):
                     save_config(config)
 
             with patch("memos_cli.config.CONFIG_FILE", config_file), \
-                    patch.dict(os.environ, _isolated_env(), clear=True):
+                    patch.dict(os.environ, _env_without_memos_overrides(), clear=True):
                 reloaded = load_config()
 
             self.assertEqual(reloaded.defaults.user_id, "测试用户")
             self.assertEqual(reloaded.defaults.conversation_id, "会话-1")
+            # Cross-check ASCII fields so the round-trip proves the whole
+            # file survived — not just its CJK values.
+            self.assertEqual(reloaded.platform.api_key, "token-x")
+            self.assertEqual(reloaded.platform.base_url, "https://example.test/api")
 
 
 if __name__ == "__main__":

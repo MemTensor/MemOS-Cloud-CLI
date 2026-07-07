@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import os
+import sys
 from pathlib import Path
 from pydantic import BaseModel, Field, ConfigDict
 import yaml
@@ -85,24 +86,28 @@ def load_config() -> MemOSConfig:
             # codepage (e.g. GBK on Chinese Windows). Fall back to a lossy
             # re-read so the user does not lose all saved settings — better
             # to surface a warning than silently discard the whole file.
-            import sys as _sys
             try:
                 with open(
                     CONFIG_FILE, "r", encoding="utf-8", errors="replace"
                 ) as f:
                     data = yaml.safe_load(f)
-                    if data:
-                        config = _load_file_config(data)
+                # Always fire the "not valid UTF-8" warning once the fallback
+                # read itself succeeds, even if YAML parsing or config
+                # loading below raises — the file *was* decoded, just not
+                # cleanly. Emitting the correct diagnostic here keeps the
+                # generic message below reserved for actual I/O failures.
                 print(
                     f"warning: {CONFIG_FILE} is not valid UTF-8; "
                     "loaded with lossy decoding. Re-save to migrate to UTF-8.",
-                    file=_sys.stderr,
+                    file=sys.stderr,
                 )
+                if data:
+                    config = _load_file_config(data)
             except Exception:
                 print(
                     f"warning: could not decode {CONFIG_FILE}; "
                     "using defaults for this session.",
-                    file=_sys.stderr,
+                    file=sys.stderr,
                 )
         except Exception:
             pass

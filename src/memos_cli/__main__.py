@@ -1,11 +1,17 @@
-"""Allow running with `python -m memos_cli`.
+"""Allow running with ``python -m memos_cli``.
 
-The bootstrap in :mod:`memos_cli._encoding` runs as a side effect of
-importing :mod:`memos_cli` (see :mod:`memos_cli.__init__`), so stdio is
-already reconfigured to UTF-8 before ``memos_cli.main`` — and any Rich
-``Console`` it constructs at module scope — is imported below.
+The UTF-8 stdio bootstrap is invoked *before* :mod:`memos_cli.main` is
+imported, so Rich :class:`~rich.console.Console` instances constructed at
+that module's top level pick up the reconfigured ``sys.stdout`` /
+``sys.stderr``.
 """
-from memos_cli.main import app
+from memos_cli._encoding import configure_stdio_utf8
+
+# Idempotent — safe to call again from ``memos_cli.main`` for the direct
+# ``memos = memos_cli.main:app`` entry-point path.
+configure_stdio_utf8()
+
+from memos_cli.main import app  # noqa: E402 — must follow the bootstrap call.
 
 if __name__ == "__main__":
     app()

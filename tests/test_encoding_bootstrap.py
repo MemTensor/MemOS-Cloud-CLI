@@ -95,25 +95,37 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
                 raise OSError("stream is not seekable")
 
         angry = Angry()
+        stub_out = _StreamStub()
+        stub_err = _StreamStub()
 
         with patch.object(sys, "stdin", angry):
-            with patch.object(sys, "stdout", _StreamStub()):
-                with patch.object(sys, "stderr", _StreamStub()):
+            with patch.object(sys, "stdout", stub_out):
+                with patch.object(sys, "stderr", stub_err):
                     # Should not raise even though reconfigure() throws.
                     configure_stdio_utf8()
 
+        # A hostile stdin must not abort processing of the remaining streams —
+        # stdout and stderr must still get exactly one reconfigure call each.
+        self.assertEqual(len(stub_out.reconfigure_calls), 1)
+        self.assertEqual(len(stub_err.reconfigure_calls), 1)
+
     def test_idempotent_repeated_calls(self) -> None:
-        """A second call must be a no-op on an already-UTF-8 stream."""
-        stub = _StreamStub()
-        with patch.object(sys, "stdin", stub):
-            with patch.object(sys, "stdout", _StreamStub()):
-                with patch.object(sys, "stderr", _StreamStub()):
+        """A second call must be a no-op on already-UTF-8 stdin, stdout, stderr."""
+        stub_in = _StreamStub()
+        stub_out = _StreamStub()
+        stub_err = _StreamStub()
+        with patch.object(sys, "stdin", stub_in):
+            with patch.object(sys, "stdout", stub_out):
+                with patch.object(sys, "stderr", stub_err):
                     configure_stdio_utf8()
                     configure_stdio_utf8()
 
-        self.assertEqual(stub.encoding, "utf-8")
-        # Second call short-circuits via the ``_is_already_utf8`` guard.
-        self.assertEqual(len(stub.reconfigure_calls), 1)
+        self.assertEqual(stub_in.encoding, "utf-8")
+        # Second call short-circuits every stream via the
+        # ``_is_already_utf8`` guard, not just stdin.
+        self.assertEqual(len(stub_in.reconfigure_calls), 1)
+        self.assertEqual(len(stub_out.reconfigure_calls), 1)
+        self.assertEqual(len(stub_err.reconfigure_calls), 1)
 
     def test_idempotent_repeated_calls_fallback_path(self) -> None:
         """Second call on the rewrap path must not double-wrap the TextIOWrapper."""
@@ -140,35 +152,57 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
 
 
 class BootstrapImportSideEffectTests(unittest.TestCase):
-    def test_importing_package_sets_pythonioencoding(self) -> None:
-        """Importing ``memos_cli`` in a fresh interpreter must pin PYTHONIOENCODING.
+    """Verify where the UTF-8 bootstrap runs — and, importantly, where it *doesn't*.
 
-        Running in the current process is not meaningful: the test framework
-        has already imported ``memos_cli`` to discover tests, so a second
-        import is a cache hit and never re-executes ``__init__.py``. Spawn a
-        subprocess with ``PYTHONIOENCODING`` scrubbed so the bootstrap
-        actually runs.
-        """
+    The bootstrap must not fire when consumers merely ``import memos_cli`` as
+    a library, but must still fire on the CLI entry-points
+    (``memos_cli.__main__`` for ``python -m memos_cli`` and
+    ``memos_cli.main`` for the ``memos`` console script).
+    """
+
+    _REPO_SRC = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
+    )
+
+    def _env_without_pythonioencoding(self) -> dict[str, str]:
         env = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
-        # Ensure the package under test is importable in the subprocess. The
-        # repo lays out the package under ``src/`` so we prepend that here.
-        repo_src = os.path.join(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
-        )
         env["PYTHONPATH"] = os.pathsep.join(
-            [repo_src, env.get("PYTHONPATH", "")]
+            [self._REPO_SRC, env.get("PYTHONPATH", "")]
         ).rstrip(os.pathsep)
+        return env
 
-        result = subprocess.run(
-            [
-                sys.executable,
-                "-c",
-                "import os, memos_cli; "
-                "print(os.environ.get('PYTHONIOENCODING', ''))",
-            ],
+    def _run_and_capture_pythonioencoding(self, python_code: str) -> subprocess.CompletedProcess:
+        return subprocess.run(
+            [sys.executable, "-c", python_code],
             capture_output=True,
             text=True,
-            env=env,
+            env=self._env_without_pythonioencoding(),
+            timeout=30,
+        )
+
+    def test_importing_memos_cli_does_not_touch_pythonioencoding(self) -> None:
+        """``import memos_cli`` alone must remain side-effect-free (library use)."""
+        result = self._run_and_capture_pythonioencoding(
+            "import os, memos_cli; "
+            "print(os.environ.get('PYTHONIOENCODING', ''))"
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "")
+
+    def test_importing_memos_cli_main_sets_pythonioencoding(self) -> None:
+        """The ``memos`` console-script entry (``memos_cli.main:app``) must bootstrap."""
+        result = self._run_and_capture_pythonioencoding(
+            "import os, memos_cli.main; "
+            "print(os.environ.get('PYTHONIOENCODING', ''))"
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "utf-8")
+
+    def test_importing_memos_cli_dunder_main_sets_pythonioencoding(self) -> None:
+        """``python -m memos_cli`` path (``memos_cli.__main__``) must bootstrap."""
+        result = self._run_and_capture_pythonioencoding(
+            "import os, memos_cli.__main__; "
+            "print(os.environ.get('PYTHONIOENCODING', ''))"
         )
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertEqual(result.stdout.strip(), "utf-8")
