@@ -80,6 +80,30 @@ def load_config() -> MemOSConfig:
                 data = yaml.safe_load(f)
                 if data:
                     config = _load_file_config(data)
+        except UnicodeDecodeError:
+            # Config file was written by an older build using the system
+            # codepage (e.g. GBK on Chinese Windows). Fall back to a lossy
+            # re-read so the user does not lose all saved settings — better
+            # to surface a warning than silently discard the whole file.
+            import sys as _sys
+            try:
+                with open(
+                    CONFIG_FILE, "r", encoding="utf-8", errors="replace"
+                ) as f:
+                    data = yaml.safe_load(f)
+                    if data:
+                        config = _load_file_config(data)
+                print(
+                    f"warning: {CONFIG_FILE} is not valid UTF-8; "
+                    "loaded with lossy decoding. Re-save to migrate to UTF-8.",
+                    file=_sys.stderr,
+                )
+            except Exception:
+                print(
+                    f"warning: could not decode {CONFIG_FILE}; "
+                    "using defaults for this session.",
+                    file=_sys.stderr,
+                )
         except Exception:
             pass
     

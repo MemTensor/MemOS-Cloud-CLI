@@ -17,9 +17,19 @@ from __future__ import annotations
 import io
 import os
 import sys
+import warnings
 from typing import Iterable
 
 _STREAM_NAMES: tuple[str, ...] = ("stdin", "stdout", "stderr")
+_UTF8_ALIASES = frozenset({"utf-8", "utf_8", "utf8", "UTF-8", "UTF_8", "UTF8"})
+
+
+def _errors_for(name: str) -> str:
+    # stdin uses surrogateescape so undecodable bytes round-trip losslessly
+    # into subsequent encode() calls (avoiding silent U+FFFD data loss on
+    # ambiguously-encoded input). Output streams use replace because a
+    # write-side error can't destroy user data — it only affects display.
+    return "surrogateescape" if name == "stdin" else "replace"
 
 
 def configure_stdio_utf8(stream_names: Iterable[str] = _STREAM_NAMES) -> None:
@@ -45,11 +55,29 @@ def configure_stdio_utf8(stream_names: Iterable[str] = _STREAM_NAMES) -> None:
         stream = getattr(sys, name, None)
         if stream is None:
             continue
-        if _reconfigure_stream(stream):
+        errors = _errors_for(name)
+        if _is_already_utf8(stream, errors):
             continue
-        replacement = _rewrap_stream(stream, line_buffering=(name == "stdout"))
+        if _reconfigure_stream(stream, errors=errors):
+            continue
+        replacement = _rewrap_stream(
+            stream, line_buffering=(name == "stdout"), errors=errors
+        )
         if replacement is not None:
             setattr(sys, name, replacement)
+
+
+def _is_already_utf8(stream: object, errors: str) -> bool:
+    """True when the stream is already UTF-8 with the desired error handler.
+
+    Guards true idempotency: repeat calls skip reconfigure entirely, and the
+    fallback rewrap path never double-wraps an already-wrapped TextIOWrapper.
+    """
+    encoding = getattr(stream, "encoding", None)
+    if not isinstance(encoding, str) or encoding not in _UTF8_ALIASES:
+        return False
+    existing = getattr(stream, "errors", None)
+    return existing == errors
 
 
 def _switch_windows_console_to_utf8() -> None:
@@ -58,28 +86,41 @@ def _switch_windows_console_to_utf8() -> None:
         import ctypes  # local import so non-Windows platforms never touch it
 
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        kernel32.SetConsoleOutputCP(65001)
-        kernel32.SetConsoleCP(65001)
+        rc_out = kernel32.SetConsoleOutputCP(65001)
+        rc_in = kernel32.SetConsoleCP(65001)
     except Exception:
         # Console codepage change is only required for terminal rendering.
         # HTTP request bodies are already correct once the Python-level
         # text wrappers below are reconfigured, so we never propagate this.
-        pass
+        return
+
+    # Both Win32 APIs return 0 on failure (e.g. stdout redirected to a pipe
+    # in CI). Surface a diagnostic so the failure is observable — the caller
+    # can still continue because stream reconfigure below is independent.
+    if not rc_out or not rc_in:
+        warnings.warn(
+            "Failed to switch Windows console codepage to UTF-8; "
+            "terminal output may be garbled.",
+            RuntimeWarning,
+            stacklevel=3,
+        )
 
 
-def _reconfigure_stream(stream: object) -> bool:
+def _reconfigure_stream(stream: object, *, errors: str) -> bool:
     """Call ``TextIOWrapper.reconfigure`` when it is available and effective."""
     reconfigure = getattr(stream, "reconfigure", None)
     if reconfigure is None:
         return False
     try:
-        reconfigure(encoding="utf-8", errors="replace")
+        reconfigure(encoding="utf-8", errors=errors)
         return True
     except (OSError, ValueError):
         return False
 
 
-def _rewrap_stream(stream: object, *, line_buffering: bool) -> io.TextIOWrapper | None:
+def _rewrap_stream(
+    stream: object, *, line_buffering: bool, errors: str
+) -> io.TextIOWrapper | None:
     """Wrap the raw binary buffer in a fresh UTF-8 :class:`TextIOWrapper`.
 
     Older Python builds and certain embedded runtimes expose a
@@ -95,7 +136,7 @@ def _rewrap_stream(stream: object, *, line_buffering: bool) -> io.TextIOWrapper 
         return io.TextIOWrapper(
             buffer,
             encoding="utf-8",
-            errors="replace",
+            errors=errors,
             line_buffering=line_buffering,
             write_through=True,
         )

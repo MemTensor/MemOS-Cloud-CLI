@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import io
 import os
+import subprocess
 import sys
 import unittest
 from unittest.mock import patch
@@ -43,23 +44,32 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
         ):
             configure_stdio_utf8()
 
-        for name, stub in stubs.items():
+        # stdin uses surrogateescape (lossless byte round-trip); output
+        # streams use replace (display-only, can't destroy user data).
+        self.assertEqual(
+            stubs["stdin"].reconfigure_calls,
+            [{"encoding": "utf-8", "errors": "surrogateescape"}],
+        )
+        self.assertEqual(stubs["stdin"].encoding, "utf-8")
+        for name in ("stdout", "stderr"):
             self.assertEqual(
-                stub.reconfigure_calls,
+                stubs[name].reconfigure_calls,
                 [{"encoding": "utf-8", "errors": "replace"}],
-                msg=f"sys.{name} was not reconfigured to UTF-8",
+                msg=f"sys.{name} was not reconfigured to UTF-8/replace",
             )
-            self.assertEqual(stub.encoding, "utf-8")
+            self.assertEqual(stubs[name].encoding, "utf-8")
 
     def test_falls_back_to_rewrap_when_reconfigure_missing(self) -> None:
         raw_stdout = _StreamWithoutReconfigure()
 
+        # Capture ``sys.stdout`` while the patch is still active — reading it
+        # after the ``with`` block exits would return the real interpreter's
+        # stdout, not the TextIOWrapper installed by ``configure_stdio_utf8``.
         with patch.object(sys, "stdout", raw_stdout):
             with patch.object(sys, "stdin", _StreamStub()):
                 with patch.object(sys, "stderr", _StreamStub()):
                     configure_stdio_utf8()
-
-            replaced = sys.stdout
+                    replaced = sys.stdout
 
         self.assertIsInstance(replaced, io.TextIOWrapper)
         self.assertEqual(replaced.encoding.lower(), "utf-8")
@@ -72,7 +82,7 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
             self.assertEqual(os.environ.get("PYTHONIOENCODING"), "utf-8")
 
     def test_preserves_existing_pythonioencoding(self) -> None:
-        environ = {**{k: v for k, v in os.environ.items()}, "PYTHONIOENCODING": "gbk"}
+        environ = {**os.environ, "PYTHONIOENCODING": "gbk"}
         with patch.dict(os.environ, environ, clear=True):
             configure_stdio_utf8(stream_names=())
             self.assertEqual(os.environ.get("PYTHONIOENCODING"), "gbk")
@@ -93,6 +103,7 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
                     configure_stdio_utf8()
 
     def test_idempotent_repeated_calls(self) -> None:
+        """A second call must be a no-op on an already-UTF-8 stream."""
         stub = _StreamStub()
         with patch.object(sys, "stdin", stub):
             with patch.object(sys, "stdout", _StreamStub()):
@@ -101,7 +112,23 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
                     configure_stdio_utf8()
 
         self.assertEqual(stub.encoding, "utf-8")
-        self.assertEqual(len(stub.reconfigure_calls), 2)
+        # Second call short-circuits via the ``_is_already_utf8`` guard.
+        self.assertEqual(len(stub.reconfigure_calls), 1)
+
+    def test_idempotent_repeated_calls_fallback_path(self) -> None:
+        """Second call on the rewrap path must not double-wrap the TextIOWrapper."""
+        raw = _StreamWithoutReconfigure()
+        with patch.object(sys, "stdout", raw):
+            with patch.object(sys, "stdin", _StreamStub()):
+                with patch.object(sys, "stderr", _StreamStub()):
+                    configure_stdio_utf8()
+                    first = sys.stdout
+                    configure_stdio_utf8()
+                    second = sys.stdout
+
+        # Idempotent: the second call recognised ``first`` was already UTF-8
+        # and left it in place instead of wrapping it a second time.
+        self.assertIs(first, second)
 
     def test_missing_streams_are_skipped(self) -> None:
         # Some frozen environments do not attach ``sys.stdin``.
@@ -114,11 +141,37 @@ class ConfigureStdioUtf8Tests(unittest.TestCase):
 
 class BootstrapImportSideEffectTests(unittest.TestCase):
     def test_importing_package_sets_pythonioencoding(self) -> None:
-        # Merely importing the package (which the test framework has already
-        # done to load this test module) must leave PYTHONIOENCODING pinned.
-        import memos_cli  # noqa: F401 — asserts side effect only
+        """Importing ``memos_cli`` in a fresh interpreter must pin PYTHONIOENCODING.
 
-        self.assertEqual(os.environ.get("PYTHONIOENCODING"), "utf-8")
+        Running in the current process is not meaningful: the test framework
+        has already imported ``memos_cli`` to discover tests, so a second
+        import is a cache hit and never re-executes ``__init__.py``. Spawn a
+        subprocess with ``PYTHONIOENCODING`` scrubbed so the bootstrap
+        actually runs.
+        """
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONIOENCODING"}
+        # Ensure the package under test is importable in the subprocess. The
+        # repo lays out the package under ``src/`` so we prepend that here.
+        repo_src = os.path.join(
+            os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "src"
+        )
+        env["PYTHONPATH"] = os.pathsep.join(
+            [repo_src, env.get("PYTHONPATH", "")]
+        ).rstrip(os.pathsep)
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "import os, memos_cli; "
+                "print(os.environ.get('PYTHONIOENCODING', ''))",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
+        self.assertEqual(result.returncode, 0, msg=result.stderr)
+        self.assertEqual(result.stdout.strip(), "utf-8")
 
 
 if __name__ == "__main__":
