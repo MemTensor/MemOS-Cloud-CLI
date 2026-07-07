@@ -20,6 +20,10 @@ $ArchivePath = Join-Path $DistDir "$ArchiveBaseName.tar.gz"
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
 $DistMemosDir = Join-Path $DistDir "memos"
 if (Test-Path $DistMemosDir) { Remove-Item -Recurse -Force $DistMemosDir }
+# Also sweep any stale onefile artefact left behind by pre-onedir builds,
+# so `dist\` doesn't ship two overlapping copies of memos.
+$DistMemosExe = Join-Path $DistDir "memos.exe"
+if (Test-Path $DistMemosExe -PathType Leaf) { Remove-Item -Force $DistMemosExe }
 
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
@@ -28,8 +32,11 @@ python -m pip install -e "$RootDir[build]"
 python -m PyInstaller --clean --noconfirm "$RootDir\memos.spec"
 
 # memos.spec is now a PyInstaller onedir bundle (see issue #10). Stage
-# the whole dist\memos folder and pack it into the archive.
-if (-not (Test-Path $DistMemosDir)) {
+# the whole dist\memos folder and pack it into the archive. Require a
+# directory specifically — a stray file at that path (e.g. an old
+# onefile artefact) would otherwise slip through Test-Path and produce
+# a broken archive.
+if (-not (Test-Path $DistMemosDir -PathType Container)) {
     throw "PyInstaller did not produce dist\memos\ - expected onedir layout."
 }
 

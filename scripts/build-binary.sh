@@ -51,7 +51,19 @@ fi
 
 cp -R "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
 chmod +x "${STAGE_DIR}/memos/memos"
+# cp -R preserves the source permission bits, so bundled shared libraries
+# (.so on Linux, .dylib on macOS) usually stay executable. However, if the
+# build agent's umask is stricter than 022 (e.g. 027), the execute bit can
+# be silently stripped and the dynamic linker will fail at runtime with an
+# opaque error. Restore +x explicitly to keep the archive portable.
+find "${STAGE_DIR}/memos" \( -name '*.so' -o -name '*.so.*' -o -name '*.dylib' \) \
+  -exec chmod +x {} + 2>/dev/null || true
 
+# macOS quarantine strip: copy first, then clear com.apple.quarantine on
+# the *staged* tree. Any step that touches the staged files after this
+# (signing, notarisation) should re-run the strip — otherwise stale
+# attributes can propagate into the tarball and users see Gatekeeper
+# blocks on first run.
 if [[ "${PLATFORM}" == "darwin" ]]; then
   xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
 fi

@@ -7,7 +7,10 @@ const { existsSync } = require("fs");
 const path = require("path");
 
 const exeName = process.platform === "win32" ? "memos.exe" : "memos";
-const binDir = path.join(__dirname, "..", "bin");
+// This file already lives in bin/, so __dirname *is* the bin directory.
+// Going up to the package root and back into bin/ is a no-op that only
+// obscures where the paths actually resolve.
+const binDir = __dirname;
 
 // PyInstaller onedir layout ships an executable inside a `memos/` folder
 // alongside its runtime dependencies. Prefer that path so the sandbox-safe

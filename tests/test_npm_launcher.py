@@ -20,6 +20,7 @@ Two surfaces we defend:
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
 import stat
 import subprocess
@@ -39,13 +40,15 @@ def _node_available() -> bool:
     return shutil.which("node") is not None
 
 
+@unittest.skipUnless(_node_available(), "node is not available on PATH")
 class NpmLauncherResolutionTests(unittest.TestCase):
     """Drive the real bin/memos.js under node against a fake package root."""
 
     def setUp(self) -> None:
-        if not _node_available():
-            self.skipTest("node is not available on PATH")
         self.tmp = tempfile.TemporaryDirectory()
+        # Register cleanup immediately so a later setUp failure (e.g. the
+        # shutil.copy below) can't leak the temp dir.
+        self.addCleanup(self.tmp.cleanup)
         self.pkg_root = Path(self.tmp.name)
         self.bin_dir = self.pkg_root / "bin"
         self.bin_dir.mkdir(parents=True)
@@ -60,15 +63,15 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         # <pkg>/bin/memos.js to exercise the resolution logic honestly.
         shutil.copy(LAUNCHER_PATH, self.bin_dir / "memos.js")
 
-    def tearDown(self) -> None:
-        self.tmp.cleanup()
-
     def _write_fake_binary(self, target: Path, exit_code: int = 0, echo: str = "") -> None:
         """Write a shell script that pretends to be the memos executable."""
         target.parent.mkdir(parents=True, exist_ok=True)
         script = "#!/usr/bin/env bash\n"
         if echo:
-            script += f"echo '{echo}'\n"
+            # shlex.quote guards against callers passing a string with
+            # embedded quotes/metacharacters that would otherwise break
+            # the generated shell script.
+            script += f"echo {shlex.quote(echo)}\n"
         script += f"exit {exit_code}\n"
         target.write_text(script)
         target.chmod(target.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
@@ -84,9 +87,14 @@ class NpmLauncherResolutionTests(unittest.TestCase):
     def test_resolves_onedir_binary_when_present(self) -> None:
         onedir_exe = self.bin_dir / "memos" / "memos"
         self._write_fake_binary(onedir_exe, exit_code=0, echo="ONEDIR-OK")
-        # Also drop a legacy file — the launcher must NOT pick it when the
-        # onedir path is available (onedir wins).
-        self._write_fake_binary(self.bin_dir / "memos.legacy-decoy", exit_code=99)
+        # Note: we cannot also drop a "real" legacy binary at
+        # ``bin/memos`` to exercise the priority branch — the onedir
+        # layout requires ``bin/memos`` to be a *directory* (holding the
+        # ``memos`` executable), and the legacy layout requires it to be
+        # a *file*. The two paths are the same and mutually exclusive on
+        # any real filesystem, so priority is enforced structurally by
+        # the launcher's ``if existsSync(onedir) else if existsSync(legacy)``
+        # ordering rather than by physical cohabitation.
         result = self._invoke_launcher()
         self.assertEqual(result.returncode, 0, msg=result.stderr)
         self.assertIn("ONEDIR-OK", result.stdout)

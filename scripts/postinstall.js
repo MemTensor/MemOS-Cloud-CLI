@@ -112,6 +112,9 @@ function cleanPreviousInstall(onedirPath, legacyPath) {
   } catch (error) {
     if (error && error.code !== "ENOENT") {
       // Non-fatal; extraction below will fail loudly if this matters.
+      // Surface it so operators are aware of unexpected failures such as
+      // EACCES (permission denied) before extraction runs.
+      console.warn(`[postinstall] Could not remove legacy binary: ${error.message}`);
     }
   }
   return Promise.resolve();
@@ -139,6 +142,10 @@ function makeExecutable(filePath) {
   if (process.platform !== "win32" && fs.existsSync(filePath)) {
     fs.chmodSync(filePath, 0o755);
   }
+  // Keep the shape of the .then() chain consistent: every other step
+  // returns a Promise. If this ever becomes async, callers won't need to
+  // remember to await it.
+  return Promise.resolve();
 }
 
 function clearQuarantine(targetPath) {
