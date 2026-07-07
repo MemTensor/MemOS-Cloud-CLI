@@ -76,7 +76,7 @@ def load_config() -> MemOSConfig:
     
     if CONFIG_FILE.exists():
         try:
-            with open(CONFIG_FILE, "r") as f:
+            with open(CONFIG_FILE, "r", encoding="utf-8") as f:
                 data = yaml.safe_load(f)
                 if data:
                     config = _load_file_config(data)
@@ -108,8 +108,8 @@ def save_config(config: MemOSConfig) -> None:
     """Save configuration to file."""
     CONFIG_DIR.mkdir(parents=True, exist_ok=True)
     
-    with open(CONFIG_FILE, "w") as f:
-        yaml.dump(config.model_dump(), f, default_flow_style=False)
+    with open(CONFIG_FILE, "w", encoding="utf-8") as f:
+        yaml.dump(config.model_dump(), f, default_flow_style=False, allow_unicode=True)
     
     # Set secure permissions
     CONFIG_FILE.chmod(0o600)

@@ -93,7 +93,7 @@ def _log_event(event_name: str, properties: dict) -> None:
             "properties": properties,
         }
         
-        with open(log_file, "a") as f:
-            f.write(json.dumps(event_data) + "\n")
+        with open(log_file, "a", encoding="utf-8") as f:
+            f.write(json.dumps(event_data, ensure_ascii=False) + "\n")
     except Exception:
         pass
