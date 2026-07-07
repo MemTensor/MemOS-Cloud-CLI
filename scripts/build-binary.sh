@@ -39,8 +39,18 @@ mkdir -p "${STAGE_DIR}" "${DIST_DIR}"
 python -m pip install -e "${ROOT_DIR}[build]"
 python -m PyInstaller --clean --noconfirm "${ROOT_DIR}/memos.spec"
 
-cp "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
-chmod +x "${STAGE_DIR}/memos"
+# memos.spec is now a PyInstaller **onedir** bundle (see issue #10 —
+# onefile bootloader crashes in Codex Desktop with
+# "semctl: Operation not permitted"). PyInstaller drops the whole
+# runtime tree under dist/memos/; we stage that folder verbatim into
+# the archive.
+if [[ ! -d "${ROOT_DIR}/dist/memos" ]]; then
+  echo "PyInstaller did not produce dist/memos/ — expected onedir layout." >&2
+  exit 1
+fi
+
+cp -R "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
+chmod +x "${STAGE_DIR}/memos/memos"
 
 if [[ "${PLATFORM}" == "darwin" ]]; then
   xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
@@ -48,5 +58,5 @@ fi
 
 tar -czf "${ARCHIVE_PATH}" -C "${STAGE_DIR}" memos
 
-echo "Built binary: ${ROOT_DIR}/dist/memos"
+echo "Built binary tree: ${ROOT_DIR}/dist/memos/"
 echo "Built archive: ${ARCHIVE_PATH}"

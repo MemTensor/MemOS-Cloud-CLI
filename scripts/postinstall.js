@@ -23,6 +23,13 @@ const downloadUrl =
 const installDir = path.join(__dirname, "..", "bin");
 const archivePath = path.join(os.tmpdir(), assetName);
 const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
+// PyInstaller onedir layout: bin/memos/{memos,memos.exe} plus runtime deps.
+const onedirRoot = path.join(installDir, "memos");
+const onedirBinary = path.join(onedirRoot, binaryName);
+// Pre-fix installs used a single-file `bin/memos` executable. It has to
+// go before extracting the new folder, otherwise the folder can't be
+// created at the same path.
+const legacyBinary = path.join(installDir, binaryName);
 
 fs.mkdirSync(installDir, { recursive: true });
 
@@ -32,9 +39,10 @@ if (!downloadUrl) {
 }
 
 download(downloadUrl, archivePath)
+  .then(() => cleanPreviousInstall(onedirRoot, legacyBinary))
   .then(() => extractArchive(archivePath, installDir))
-  .then(() => clearQuarantine(path.join(installDir, binaryName)))
-  .then(() => makeExecutable(path.join(installDir, binaryName)))
+  .then(() => clearQuarantine(onedirRoot))
+  .then(() => makeExecutable(onedirBinary))
   .catch((error) => {
     console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
     console.error(error.message);
@@ -87,6 +95,28 @@ function download(url, destination) {
   });
 }
 
+function cleanPreviousInstall(onedirPath, legacyPath) {
+  // Delete a prior onedir folder if one exists. Ignore ENOENT.
+  try {
+    fs.rmSync(onedirPath, { recursive: true, force: true });
+  } catch (error) {
+    // Best effort; extraction below will surface the real problem.
+  }
+  // Delete a legacy single-file binary that would otherwise collide
+  // with `bin/memos/` on extraction (same path, different type).
+  try {
+    const stat = fs.lstatSync(legacyPath);
+    if (stat.isFile() || stat.isSymbolicLink()) {
+      fs.unlinkSync(legacyPath);
+    }
+  } catch (error) {
+    if (error && error.code !== "ENOENT") {
+      // Non-fatal; extraction below will fail loudly if this matters.
+    }
+  }
+  return Promise.resolve();
+}
+
 function extractArchive(archive, destination) {
   return new Promise((resolve, reject) => {
     const child = spawn("tar", ["-xzf", archive, "-C", destination], {
@@ -111,13 +141,13 @@ function makeExecutable(filePath) {
   }
 }
 
-function clearQuarantine(filePath) {
+function clearQuarantine(targetPath) {
   if (process.platform !== "darwin") {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
-    const child = spawn("xattr", ["-dr", "com.apple.quarantine", filePath], {
+    const child = spawn("xattr", ["-dr", "com.apple.quarantine", targetPath], {
       stdio: "ignore",
     });
 

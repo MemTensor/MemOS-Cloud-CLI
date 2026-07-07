@@ -18,7 +18,8 @@ $ArchiveBaseName = "memos-$Version-$Target"
 $ArchivePath = Join-Path $DistDir "$ArchiveBaseName.tar.gz"
 
 if (Test-Path $BuildDir) { Remove-Item -Recurse -Force $BuildDir }
-if (Test-Path (Join-Path $DistDir "memos.exe")) { Remove-Item -Force (Join-Path $DistDir "memos.exe") }
+$DistMemosDir = Join-Path $DistDir "memos"
+if (Test-Path $DistMemosDir) { Remove-Item -Recurse -Force $DistMemosDir }
 
 New-Item -ItemType Directory -Force -Path $StageDir | Out-Null
 New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
@@ -26,8 +27,14 @@ New-Item -ItemType Directory -Force -Path $DistDir | Out-Null
 python -m pip install -e "$RootDir[build]"
 python -m PyInstaller --clean --noconfirm "$RootDir\memos.spec"
 
-Copy-Item (Join-Path $DistDir "memos.exe") (Join-Path $StageDir "memos.exe")
-tar -czf $ArchivePath -C $StageDir memos.exe
+# memos.spec is now a PyInstaller onedir bundle (see issue #10). Stage
+# the whole dist\memos folder and pack it into the archive.
+if (-not (Test-Path $DistMemosDir)) {
+    throw "PyInstaller did not produce dist\memos\ - expected onedir layout."
+}
 
-Write-Host "Built binary: $(Join-Path $DistDir 'memos.exe')"
+Copy-Item -Recurse -Force $DistMemosDir (Join-Path $StageDir "memos")
+tar -czf $ArchivePath -C $StageDir memos
+
+Write-Host "Built binary tree: $DistMemosDir"
 Write-Host "Built archive: $ArchivePath"
