@@ -39,8 +39,17 @@ mkdir -p "${STAGE_DIR}" "${DIST_DIR}"
 python -m pip install -e "${ROOT_DIR}[build]"
 python -m PyInstaller --clean --noconfirm "${ROOT_DIR}/memos.spec"
 
-cp "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
-chmod +x "${STAGE_DIR}/memos"
+# Onedir layout: memos.spec now runs COLLECT and produces a folder
+# at dist/memos/ containing the executable plus its runtime deps.
+# Ship that folder wholesale — see issue #10 for the semctl story.
+if [[ ! -d "${ROOT_DIR}/dist/memos" ]]; then
+  echo "Expected onedir folder at ${ROOT_DIR}/dist/memos but none found." >&2
+  echo "Did memos.spec revert to onefile? See issue #10." >&2
+  exit 1
+fi
+
+cp -R "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
+chmod +x "${STAGE_DIR}/memos/memos"
 
 if [[ "${PLATFORM}" == "darwin" ]]; then
   xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
@@ -48,5 +57,5 @@ fi
 
 tar -czf "${ARCHIVE_PATH}" -C "${STAGE_DIR}" memos
 
-echo "Built binary: ${ROOT_DIR}/dist/memos"
+echo "Built onedir bundle: ${ROOT_DIR}/dist/memos"
 echo "Built archive: ${ARCHIVE_PATH}"

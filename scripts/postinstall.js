@@ -23,6 +23,15 @@ const downloadUrl =
 const installDir = path.join(__dirname, "..", "bin");
 const archivePath = path.join(os.tmpdir(), assetName);
 const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
+// Onedir layout: postinstall extracts a top-level "memos/" folder
+// from the tarball, leaving the executable at bin/memos/<exe>. See
+// issue #10 for why we moved off PyInstaller onefile.
+const onedirRoot = path.join(installDir, "memos");
+const onedirBinary = path.join(onedirRoot, binaryName);
+// Legacy single-file path lingers on disk after upgrading from a
+// pre-fix install; remove it before extracting so the new folder
+// layout does not collide with it.
+const legacyBinary = path.join(installDir, binaryName);
 
 fs.mkdirSync(installDir, { recursive: true });
 
@@ -32,9 +41,10 @@ if (!downloadUrl) {
 }
 
 download(downloadUrl, archivePath)
+  .then(() => pruneLegacyLayout())
   .then(() => extractArchive(archivePath, installDir))
-  .then(() => clearQuarantine(path.join(installDir, binaryName)))
-  .then(() => makeExecutable(path.join(installDir, binaryName)))
+  .then(() => clearQuarantine(onedirRoot))
+  .then(() => makeExecutable(onedirBinary))
   .catch((error) => {
     console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
     console.error(error.message);
@@ -87,6 +97,31 @@ function download(url, destination) {
   });
 }
 
+function pruneLegacyLayout() {
+  return new Promise((resolve) => {
+    // Remove a stale onedir folder from a previous install so tar
+    // extraction is deterministic.
+    if (fs.existsSync(onedirRoot)) {
+      fs.rmSync(onedirRoot, { recursive: true, force: true });
+    }
+    // Remove a legacy single-file drop (pre-#10 layout) so the new
+    // "memos/" folder can take its place on the filesystem.
+    if (fs.existsSync(legacyBinary)) {
+      try {
+        const stat = fs.statSync(legacyBinary);
+        if (stat.isFile()) {
+          fs.unlinkSync(legacyBinary);
+        }
+      } catch (_) {
+        // Best-effort cleanup; failure here is not fatal because
+        // extraction will overwrite what it can and the launcher
+        // still resolves the onedir path.
+      }
+    }
+    resolve();
+  });
+}
+
 function extractArchive(archive, destination) {
   return new Promise((resolve, reject) => {
     const child = spawn("tar", ["-xzf", archive, "-C", destination], {
@@ -111,13 +146,18 @@ function makeExecutable(filePath) {
   }
 }
 
-function clearQuarantine(filePath) {
+function clearQuarantine(targetPath) {
   if (process.platform !== "darwin") {
+    return Promise.resolve();
+  }
+  if (!fs.existsSync(targetPath)) {
     return Promise.resolve();
   }
 
   return new Promise((resolve) => {
-    const child = spawn("xattr", ["-dr", "com.apple.quarantine", filePath], {
+    // Recursive: onedir ships a folder of dylibs, all of which the
+    // Gatekeeper quarantine bit is stamped on.
+    const child = spawn("xattr", ["-dr", "com.apple.quarantine", targetPath], {
       stdio: "ignore",
     });
 
