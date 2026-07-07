@@ -110,42 +110,39 @@ function download(url, destination) {
 }
 
 function pruneLegacyLayout() {
-  return new Promise((resolve) => {
-    // Remove a stale onedir folder from a previous install so tar
-    // extraction is deterministic. fs.rmSync can throw synchronously
-    // (e.g. EPERM on Windows if a file inside is locked, EACCES on
-    // POSIX). Trap it here so the .catch chain in the caller does
-    // not miss the failure — this cleanup is best-effort.
+  // Plain synchronous function: the .then(() => pruneLegacyLayout())
+  // caller converts any thrown exception into a rejection so the
+  // outer .catch handler still sees it. Wrapping the sync fs.*Sync
+  // calls in a `new Promise((resolve) => ...)` executor with no
+  // reject path silently swallows failures — see PR #14 review.
+
+  // Remove a stale onedir folder from a previous install so tar
+  // extraction is deterministic. If fs.rmSync throws synchronously
+  // (e.g. EPERM on Windows if a file inside is locked, EACCES on
+  // POSIX), let it propagate — extractArchive would fail on the same
+  // locked path anyway, and a clear error message is preferable to a
+  // silent no-op.
+  if (fs.existsSync(onedirRoot)) {
+    fs.rmSync(onedirRoot, { recursive: true, force: true });
+  }
+  // Remove a legacy single-file drop (pre-#10 layout) so the new
+  // "memos/" folder can take its place on the filesystem. This one
+  // is best-effort: the launcher still resolves the onedir path even
+  // if the legacy file lingers, so filesystem quirks (locked file,
+  // EACCES) should not fail the install — but do surface a warning
+  // so users have a diagnostic trail.
+  if (fs.existsSync(legacyBinary)) {
     try {
-      if (fs.existsSync(onedirRoot)) {
-        fs.rmSync(onedirRoot, { recursive: true, force: true });
+      const stat = fs.statSync(legacyBinary);
+      if (stat.isFile()) {
+        fs.unlinkSync(legacyBinary);
       }
     } catch (error) {
       console.warn(
-        `Could not remove stale onedir folder ${onedirRoot}: ${error.message}`
+        `Could not remove legacy binary at ${legacyBinary}: ${error.message}`
       );
     }
-    // Remove a legacy single-file drop (pre-#10 layout) so the new
-    // "memos/" folder can take its place on the filesystem.
-    if (fs.existsSync(legacyBinary)) {
-      try {
-        const stat = fs.statSync(legacyBinary);
-        if (stat.isFile()) {
-          fs.unlinkSync(legacyBinary);
-        }
-      } catch (error) {
-        // Best-effort cleanup; failure here is not fatal because
-        // extraction will overwrite what it can and the launcher
-        // still resolves the onedir path. Surface it as a warning
-        // so users have a signal when unexpected filesystem errors
-        // occur (permissions, locked files, ...).
-        console.warn(
-          `Could not remove legacy binary at ${legacyBinary}: ${error.message}`
-        );
-      }
-    }
-    resolve();
-  });
+  }
 }
 
 function extractArchive(archive, destination) {

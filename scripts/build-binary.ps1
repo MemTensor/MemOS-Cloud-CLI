@@ -38,10 +38,13 @@ if (-not (Test-Path $OneDirRoot -PathType Container)) {
 # Copy-Item -Recurse into an already-existing destination nests the
 # source *inside* it (e.g. StageDir\memos\memos\*), which breaks the
 # tar layout and postinstall extraction. Wipe any prior destination
-# so the copy is idempotent across partial re-runs.
+# so the copy is idempotent across partial re-runs. -Force on the
+# Copy-Item matches the -Recurse -Force pattern used on the removals
+# above and covers the narrow window where a partial destination is
+# recreated between the Remove-Item and Copy-Item calls.
 $StageMemos = Join-Path $StageDir "memos"
 if (Test-Path $StageMemos) { Remove-Item -Recurse -Force $StageMemos }
-Copy-Item -Recurse $OneDirRoot $StageMemos
+Copy-Item -Recurse -Force $OneDirRoot $StageMemos
 tar -czf $ArchivePath -C $StageDir memos
 
 Write-Host "Built onedir bundle: $(Join-Path $DistDir 'memos')"

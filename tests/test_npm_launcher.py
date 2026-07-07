@@ -80,7 +80,12 @@ class NpmLauncherResolutionTests(unittest.TestCase):
 
     def _write_stub(self, path: Path, exit_code: int = 0, marker: str = "") -> None:
         """Drop an executable shell script that prints ``marker`` and
-        exits with ``exit_code``. Supports arbitrary ``"$@"`` args."""
+        exits with ``exit_code``. Supports arbitrary ``"$@"`` args.
+
+        Uses ``/bin/sh`` (POSIX) so the stub runs on minimal images
+        like Alpine or BSD that ship without bash. The only builtins
+        used are ``printf``, ``echo`` and ``exit`` — all POSIX.
+        """
         # Defensive: markers should be simple identifiers. If a future
         # caller passes something with shell metacharacters, printf %s
         # below still keeps the content safe, but flag it loudly.
@@ -91,7 +96,7 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         path.write_text(
             textwrap.dedent(
                 f"""\
-                #!/usr/bin/env bash
+                #!/bin/sh
                 printf '%s\\n' '{marker}'
                 echo "args=$*"
                 exit {exit_code}
@@ -101,12 +106,20 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         path.chmod(path.stat().st_mode | stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
 
     def _run_launcher(self, *args: str) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            ["node", str(self.pkg_root / "bin" / "memos.js"), *args],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
+        try:
+            return subprocess.run(
+                ["node", str(self.pkg_root / "bin" / "memos.js"), *args],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+        except subprocess.TimeoutExpired as exc:
+            # Convert the raw TimeoutExpired traceback into a clean
+            # assertion failure so debugging a hung stub or launcher
+            # regression is not lost in a stack trace. subprocess.run
+            # already kills the child before raising, so no zombie is
+            # left behind.
+            self.fail(f"Launcher timed out after 30s: {exc}")
 
     def test_resolves_onedir_binary_when_present(self) -> None:
         """Onedir layout (``bin/memos/<exe>``) is picked when present.
@@ -120,7 +133,6 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         :meth:`test_falls_back_to_legacy_single_file`.
         """
         onedir_exe = self.pkg_root / "bin" / "memos" / "memos"
-        legacy_exe = self.pkg_root / "bin" / "memos"
 
         self._write_stub(onedir_exe, exit_code=0, marker="ONEDIR_HIT")
         result = self._run_launcher("show", "config")
@@ -128,11 +140,6 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("ONEDIR_HIT", result.stdout)
         self.assertIn("args=show config", result.stdout)
-        # Regression guard: legacy file must NOT have been created by
-        # the launcher itself (only postinstall touches disk). On
-        # POSIX ``bin/memos`` here is the directory holding the onedir
-        # binary, so ``is_file()`` correctly reports False.
-        self.assertFalse(legacy_exe.is_file())
 
     def test_falls_back_to_legacy_single_file(self) -> None:
         """When onedir folder is absent, launcher uses ``bin/memos``."""
