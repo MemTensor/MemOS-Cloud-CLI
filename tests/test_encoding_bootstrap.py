@@ -92,7 +92,28 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         self.bootstrap.ensure_utf8_stdio()
 
         self.assertEqual(sys.stdin.encoding.lower().replace("-", ""), "utf8")
+        # Contract per the module docstring: stdin uses
+        # ``errors='surrogateescape'`` so unexpected non-UTF-8 bytes (e.g. a
+        # paste from a CP936 terminal when ``bin/memos.js`` is bypassed) do
+        # NOT raise ``UnicodeDecodeError`` and crash the CLI.  See OCR round-2
+        # Finding 3.
+        self.assertEqual(sys.stdin.errors, "surrogateescape")
         self.assertEqual(sys.stdin.readline().rstrip("\n"), "测试中文记忆存储")
+
+    def test_stdin_survives_non_utf8_bytes_via_surrogateescape(self) -> None:
+        # A stray GBK byte (0x80..0xFF that is not valid UTF-8) must not raise
+        # UnicodeDecodeError — it should round-trip as a surrogate code point.
+        # This is the exact scenario OCR round-2 Finding 3 flagged as a
+        # regression risk when ``errors='strict'`` was the default.
+        payload = b"hello \xff world\n"
+        sys.stdin = self._make_input_stream(payload, "gbk")
+
+        self.bootstrap.ensure_utf8_stdio()
+
+        # Must not raise.
+        line = sys.stdin.readline()
+        self.assertTrue(line.startswith("hello "))
+        self.assertTrue(line.endswith(" world\n"))
 
     def test_leaves_utf8_streams_untouched(self) -> None:
         utf8_stdout = self._make_stream("utf-8")
@@ -103,14 +124,33 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         self.assertIs(sys.stdout, utf8_stdout)
 
     def test_treats_utf_8_alias_as_already_utf8(self) -> None:
-        # Python's codec registry canonicalizes ``utf_8`` and ``cp65001`` (the
-        # Windows console alias) to the same codec as ``utf-8``.  The bootstrap
-        # must recognise those spellings so it does not needlessly re-wrap a
-        # stream that is already effectively UTF-8.
-        for alias in ("utf_8", "UTF-8", "cp65001"):
+        # Python's codec registry canonicalizes ``utf_8`` and ``UTF-8`` to the
+        # same codec as ``utf-8``.  The bootstrap must recognise those spellings
+        # so it does not needlessly re-wrap a stream that is already effectively
+        # UTF-8.
+        for alias in ("utf_8", "UTF-8"):
             with self.subTest(alias=alias):
                 self.bootstrap._APPLIED = False
                 stream = self._make_stream(alias)
+                sys.stdout = stream
+                self.bootstrap.ensure_utf8_stdio()
+                self.assertIs(sys.stdout, stream)
+
+        # ``cp65001`` is a Windows-only codec alias; on POSIX systems Python's
+        # codec registry does not know about it and ``io.TextIOWrapper(...,
+        # encoding='cp65001')`` inside ``_make_stream`` raises ``LookupError``.
+        # Only exercise this subtest where the alias is actually registered so
+        # POSIX CI does not error out on stream construction.
+        try:
+            import codecs
+
+            codecs.lookup("cp65001")
+        except LookupError:
+            pass
+        else:
+            with self.subTest(alias="cp65001"):
+                self.bootstrap._APPLIED = False
+                stream = self._make_stream("cp65001")
                 sys.stdout = stream
                 self.bootstrap.ensure_utf8_stdio()
                 self.assertIs(sys.stdout, stream)
@@ -205,6 +245,11 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         # buffer.  It must be UTF-8 and writable.
         self.assertIsInstance(sys.stdout, io.TextIOWrapper)
         self.assertEqual(sys.stdout.encoding.lower().replace("-", ""), "utf8")
+        # Contract per the module docstring and ``_reconfigure_stream`` call
+        # site: stdout uses ``errors='replace'`` so a stray non-UTF-8 byte
+        # cannot crash the CLI mid-write. Pin the value so a regression that
+        # hardcodes ``errors='strict'`` on the fallback path is caught here.
+        self.assertEqual(sys.stdout.errors, "replace")
         sys.stdout.write("测试")
         sys.stdout.flush()
 
@@ -224,6 +269,15 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         calls: list[int] = []
 
         class FakeKernel32:
+            # Report a non-UTF-8 code page so the bootstrap decides both
+            # SetConsole*CP calls are necessary. 936 = CP936/GBK, the exact
+            # scenario the bootstrap targets.
+            def GetConsoleOutputCP(self) -> int:
+                return 936
+
+            def GetConsoleCP(self) -> int:
+                return 936
+
             def SetConsoleOutputCP(self, cp: int) -> None:
                 calls.append(cp)
 
@@ -245,6 +299,39 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         # what matters is that both code pages were switched to UTF-8 (65001).
         # ``assertCountEqual`` asserts the multiset without pinning ordering.
         self.assertCountEqual(calls, [65001, 65001])
+
+    def test_windows_console_cp_skipped_when_already_utf8(self) -> None:
+        # If the current console code page is already 65001 (CP_UTF8) the
+        # bootstrap must NOT re-issue SetConsole*CP. This keeps side effects
+        # off Windows library users whose host application already runs in
+        # UTF-8 mode (see OCR round-2 Finding 4).
+        set_calls: list[int] = []
+
+        class FakeKernel32:
+            def GetConsoleOutputCP(self) -> int:
+                return 65001
+
+            def GetConsoleCP(self) -> int:
+                return 65001
+
+            def SetConsoleOutputCP(self, cp: int) -> None:
+                set_calls.append(cp)
+
+            def SetConsoleCP(self, cp: int) -> None:
+                set_calls.append(cp)
+
+        class FakeWindll:
+            kernel32 = FakeKernel32()
+
+        fake_ctypes = type(sys)("ctypes")
+        fake_ctypes.windll = FakeWindll()
+
+        with patch.object(sys, "platform", "win32"), patch.dict(
+            sys.modules, {"ctypes": fake_ctypes}
+        ):
+            self.bootstrap.ensure_utf8_stdio()
+
+        self.assertEqual(set_calls, [])
 
     @unittest.skipIf(
         sys.platform == "win32",

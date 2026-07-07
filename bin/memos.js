@@ -19,12 +19,14 @@ if (!existsSync(binaryPath)) {
 // so we set it here in the child environment.  Without this, memos.exe on
 // Simplified Chinese Windows binds sys.stdin/stdout/stderr to CP936/GBK and
 // corrupts CJK text (issue #15).  Only set defaults so callers who deliberately
-// pick a different encoding are respected.
+// pick a different encoding are respected.  A falsy check (rather than strict
+// ``=== undefined``) also treats an empty string as "unset" so a stray
+// ``PYTHONUTF8=""`` in the parent env does not silently disable UTF-8 mode.
 const childEnv = Object.assign({}, process.env);
-if (childEnv.PYTHONUTF8 === undefined) {
+if (!childEnv.PYTHONUTF8) {
   childEnv.PYTHONUTF8 = "1";
 }
-if (childEnv.PYTHONIOENCODING === undefined) {
+if (!childEnv.PYTHONIOENCODING) {
   childEnv.PYTHONIOENCODING = "utf-8";
 }
 

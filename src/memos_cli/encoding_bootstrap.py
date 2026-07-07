@@ -24,8 +24,11 @@ This module ships three defenses that stack cleanly:
    modules imported during interpreter startup see UTF-8 streams.
 
 The reconfigure uses ``errors='replace'`` on stdout/stderr so a stray non-UTF-8
-byte cannot crash the CLI, and ``errors='strict'`` on stdin so bad input is
-surfaced rather than silently mangled.
+byte cannot crash the CLI, and ``errors='surrogateescape'`` on stdin so
+unexpected non-UTF-8 input (e.g. a paste from a GBK terminal when ``bin/memos.js``
+is bypassed) round-trips as surrogate code points instead of raising
+``UnicodeDecodeError`` and crashing the process.  Downstream handlers can still
+opt-in to strict decoding at the call site.
 
 All operations are wrapped in narrow ``try/except`` blocks. This bootstrap must
 never itself raise; failing to configure UTF-8 must not break the CLI on
@@ -154,9 +157,16 @@ def _configure_windows_console() -> None:
 
     try:
         kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
-        # 65001 = CP_UTF8.
-        kernel32.SetConsoleOutputCP(65001)
-        kernel32.SetConsoleCP(65001)
+        # 65001 = CP_UTF8.  Read the current code page first and only issue the
+        # Set*CP call when it differs — the bootstrap is invoked at import time
+        # of ``memos_cli.main``, so a library user doing
+        # ``from memos_cli.main import app`` inside a larger Windows application
+        # would otherwise have their process-wide console CP flipped as a side
+        # effect even when it's already UTF-8.
+        if kernel32.GetConsoleOutputCP() != 65001:
+            kernel32.SetConsoleOutputCP(65001)
+        if kernel32.GetConsoleCP() != 65001:
+            kernel32.SetConsoleCP(65001)
     except (AttributeError, OSError):
         return
 
@@ -178,7 +188,7 @@ def ensure_utf8_stdio() -> None:
 
         try:
             _set_env_defaults()
-            _reconfigure_stream("stdin", errors="strict")
+            _reconfigure_stream("stdin", errors="surrogateescape")
             _reconfigure_stream("stdout", errors="replace")
             _reconfigure_stream("stderr", errors="replace")
             _configure_windows_console()
