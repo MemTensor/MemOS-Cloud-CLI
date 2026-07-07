@@ -35,13 +35,39 @@ Windows terminal that already uses UTF-8).
 
 from __future__ import annotations
 
+import codecs
 import io
 import os
 import sys
+import threading
 
 __all__ = ["ensure_utf8_stdio"]
 
 _APPLIED = False
+_LOCK = threading.Lock()
+
+try:
+    _UTF8_CANONICAL = codecs.lookup("utf-8").name
+except LookupError:  # pragma: no cover — utf-8 is always available in CPython
+    _UTF8_CANONICAL = "utf-8"
+
+
+def _is_utf8_encoding(name: str) -> bool:
+    """Return True when ``name`` is any spelling of UTF-8.
+
+    The Python codec registry knows all the aliases (``utf_8``, ``utf-8``,
+    ``UTF8``, ``cp65001`` on Windows, ...). ``codecs.lookup`` canonicalizes them
+    to the same name, which lets us skip an unnecessary reconfigure when the
+    stream is already effectively UTF-8. If the encoding string is unknown we
+    conservatively return False so the reconfigure path still runs.
+    """
+
+    if not name:
+        return False
+    try:
+        return codecs.lookup(name).name == _UTF8_CANONICAL
+    except LookupError:
+        return False
 
 
 def _reconfigure_stream(stream_name: str, *, errors: str) -> None:
@@ -58,8 +84,9 @@ def _reconfigure_stream(stream_name: str, *, errors: str) -> None:
         return
 
     current_encoding = getattr(stream, "encoding", "") or ""
-    if current_encoding.lower().replace("-", "") == "utf8":
-        # Nothing to do — already UTF-8.
+    if _is_utf8_encoding(current_encoding):
+        # Nothing to do — already UTF-8 (handles aliases like ``utf_8``,
+        # ``cp65001``, ``UTF-8``, ...).
         return
 
     reconfigure = getattr(stream, "reconfigure", None)
@@ -76,16 +103,27 @@ def _reconfigure_stream(stream_name: str, *, errors: str) -> None:
         return
 
     try:
+        # NOTE: ``line_buffering=True`` combined with ``write_through=True``
+        # raises ``ValueError`` on Python 3.12+ ("can't have line_buffering=True
+        # with write_through=True"). ``write_through=True`` already bypasses the
+        # Python-level buffer entirely, so ``line_buffering`` adds nothing and
+        # is intentionally omitted.
         wrapped = io.TextIOWrapper(
             buffer,
             encoding="utf-8",
             errors=errors,
-            line_buffering=getattr(stream, "line_buffering", False),
             write_through=True,
         )
     except (ValueError, OSError):
         return
 
+    # Best-effort flush so any partial output already buffered on the original
+    # wrapper (e.g. a prompt written before the bootstrap ran) is not silently
+    # discarded when we swap the stream reference.
+    try:
+        stream.flush()
+    except Exception:  # pragma: no cover — flush failure is not fatal
+        pass
     setattr(sys, stream_name, wrapped)
 
 
@@ -126,20 +164,27 @@ def _configure_windows_console() -> None:
 def ensure_utf8_stdio() -> None:
     """Force ``sys.stdin/stdout/stderr`` to UTF-8 for the current process.
 
-    Idempotent: calling it twice does no additional work. Never raises.
+    Idempotent: calling it twice does no additional work. Never raises. The
+    check-and-set is guarded by a ``threading.Lock`` so concurrent calls from
+    multiple threads still result in exactly one bootstrap; while the CLI
+    entry points are effectively single-threaded, the PyInstaller runtime hook
+    and library-mode users may exercise this path from unexpected contexts.
     """
 
     global _APPLIED
-    if _APPLIED:
-        return
+    with _LOCK:
+        if _APPLIED:
+            return
 
-    try:
-        _set_env_defaults()
-        _reconfigure_stream("stdin", errors="strict")
-        _reconfigure_stream("stdout", errors="replace")
-        _reconfigure_stream("stderr", errors="replace")
-        _configure_windows_console()
-    except Exception:  # pragma: no cover — defensive; bootstrap must not fail
-        return
-    finally:
-        _APPLIED = True
+        try:
+            _set_env_defaults()
+            _reconfigure_stream("stdin", errors="strict")
+            _reconfigure_stream("stdout", errors="replace")
+            _reconfigure_stream("stderr", errors="replace")
+            _configure_windows_console()
+            # Only mark done on full success: if any step raised and we fell
+            # into the ``except`` below, streams may be half-configured and a
+            # future call should still be free to retry.
+            _APPLIED = True
+        except Exception:  # pragma: no cover — defensive; bootstrap must not fail
+            return

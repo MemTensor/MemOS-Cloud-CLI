@@ -6,6 +6,18 @@ from __future__ import annotations
 # binds stdio to CP936/GBK, corrupting CJK text (issue #15).  Importing this
 # module has no effect when the streams are already UTF-8 (Linux/macOS or a
 # console that opted in via ``PYTHONUTF8=1``).
+#
+# Why the call lives *here* even though ``__main__.py`` and the PyInstaller
+# runtime hook also call it:
+#   * ``pyproject.toml`` registers ``memos = memos_cli.main:app`` as the
+#     console_scripts entry point, so ``pip install`` users run ``memos``
+#     which imports this module *without* going through ``__main__.py``.
+#   * Library users doing ``from memos_cli.main import app`` in their own
+#     scripts likewise skip ``__main__.py``.
+# The call is guarded by an idempotency flag in ``encoding_bootstrap`` so the
+# repeated invocation from the other entry paths is a cheap no-op. The
+# ``# noqa: E402`` on the following imports is intentional: this side-effect
+# must run before ``typer``/``rich`` capture stdio references.
 from memos_cli.encoding_bootstrap import ensure_utf8_stdio
 
 ensure_utf8_stdio()

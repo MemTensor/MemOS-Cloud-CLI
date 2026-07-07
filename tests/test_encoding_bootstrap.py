@@ -102,6 +102,19 @@ class EnsureUtf8StdioTests(unittest.TestCase):
 
         self.assertIs(sys.stdout, utf8_stdout)
 
+    def test_treats_utf_8_alias_as_already_utf8(self) -> None:
+        # Python's codec registry canonicalizes ``utf_8`` and ``cp65001`` (the
+        # Windows console alias) to the same codec as ``utf-8``.  The bootstrap
+        # must recognise those spellings so it does not needlessly re-wrap a
+        # stream that is already effectively UTF-8.
+        for alias in ("utf_8", "UTF-8", "cp65001"):
+            with self.subTest(alias=alias):
+                self.bootstrap._APPLIED = False
+                stream = self._make_stream(alias)
+                sys.stdout = stream
+                self.bootstrap.ensure_utf8_stdio()
+                self.assertIs(sys.stdout, stream)
+
     def test_sets_env_defaults_for_child_processes(self) -> None:
         self.bootstrap.ensure_utf8_stdio()
 
@@ -109,8 +122,21 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         self.assertEqual(os.environ.get("PYTHONIOENCODING"), "utf-8")
 
     def test_does_not_override_user_env_choices(self) -> None:
+        # Scope note: this test only guards ``_set_env_defaults`` — it does not
+        # (and should not) assert anything about whether ``sys.stdout``/
+        # ``sys.stderr`` were reconfigured. The stream reconfigure path is
+        # independent of the env-var path and is covered by the dedicated
+        # ``test_reconfigures_*`` and ``test_leaves_utf8_streams_untouched``
+        # tests.  Here we pin the invariant "user's PYTHONUTF8/PYTHONIOENCODING
+        # override is preserved" so a future refactor cannot silently start
+        # clobbering it.
         os.environ["PYTHONUTF8"] = "0"
         os.environ["PYTHONIOENCODING"] = "latin-1"
+
+        # Also install a UTF-8 stream so no reconfigure happens as a side
+        # effect — makes it explicit that we are testing env vars only.
+        sys.stdout = self._make_stream("utf-8")
+        sys.stderr = self._make_stream("utf-8")
 
         self.bootstrap.ensure_utf8_stdio()
 
@@ -129,6 +155,35 @@ class EnsureUtf8StdioTests(unittest.TestCase):
 
         # Second call must be a no-op — the stream stays the same wrapper.
         self.assertIs(first, second)
+
+    def test_mid_sequence_failure_does_not_latch_applied_flag(self) -> None:
+        # If the bootstrap crashes partway through (e.g. reconfiguring stdin
+        # blows up before stdout/stderr are touched), the idempotency flag must
+        # NOT be set — a later retry should be free to complete the work.
+        original_reconfigure = self.bootstrap._reconfigure_stream
+
+        call_count = {"n": 0}
+
+        def flaky(stream_name: str, *, errors: str) -> None:
+            call_count["n"] += 1
+            if call_count["n"] == 1:
+                raise RuntimeError("boom on first attempt")
+            original_reconfigure(stream_name, errors=errors)
+
+        with patch.object(self.bootstrap, "_reconfigure_stream", flaky):
+            # First call should swallow the exception and leave _APPLIED False.
+            self.bootstrap.ensure_utf8_stdio()
+            self.assertFalse(
+                self.bootstrap._APPLIED,
+                "flag must not latch when bootstrap fails mid-sequence",
+            )
+
+        # Second call runs cleanly and finishes the work.
+        gbk_stdout = self._make_stream("gbk")
+        sys.stdout = gbk_stdout
+        self.bootstrap.ensure_utf8_stdio()
+        self.assertTrue(self.bootstrap._APPLIED)
+        self.assertEqual(sys.stdout.encoding.lower().replace("-", ""), "utf8")
 
     def test_reconfigure_failure_falls_back_to_buffer_wrap(self) -> None:
         class FakeStream:
@@ -186,13 +241,21 @@ class EnsureUtf8StdioTests(unittest.TestCase):
         ):
             self.bootstrap.ensure_utf8_stdio()
 
-        self.assertEqual(calls, [65001, 65001])
+        # Order of the two SetConsole*CP calls is an implementation detail —
+        # what matters is that both code pages were switched to UTF-8 (65001).
+        # ``assertCountEqual`` asserts the multiset without pinning ordering.
+        self.assertCountEqual(calls, [65001, 65001])
 
+    @unittest.skipIf(
+        sys.platform == "win32",
+        "POSIX-only: on Windows this test would falsely pass because the real "
+        "ctypes.windll dance actually executes; the Windows path is covered by "
+        "test_windows_console_cp_set_when_on_win32 via patching.",
+    )
     def test_does_not_call_windows_console_cp_on_posix(self) -> None:
         # On non-Windows platforms the ctypes.windll dance is skipped.  If it
         # ran and reached ctypes.windll on Linux, importing would fail.  So the
         # bare fact that this call succeeds proves the guard works.
-        self.assertNotEqual(sys.platform, "win32", "test assumes CI runs on POSIX")
         self.bootstrap.ensure_utf8_stdio()
 
 
