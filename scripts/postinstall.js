@@ -40,28 +40,29 @@ if (!downloadUrl) {
   process.exit(1);
 }
 
-download(downloadUrl, archivePath)
-  .then(() => pruneLegacyLayout())
-  .then(() => extractArchive(archivePath, installDir))
-  .then(() => {
-    // Guard against a silent extraction (corrupt tarball, missing
-    // top-level "memos/" folder, tar 0-exit on some platforms even
-    // for empty archives). Without this check the downstream
-    // clearQuarantine + makeExecutable both no-op silently and the
-    // install would exit 0 with no usable binary.
-    if (!fs.existsSync(onedirBinary)) {
-      throw new Error(
-        `Extraction succeeded but expected binary not found at ${onedirBinary}`
-      );
-    }
-  })
-  .then(() => clearQuarantine(onedirRoot))
-  .then(() => makeExecutable(onedirBinary))
-  .catch((error) => {
-    console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
-    console.error(error.message);
-    process.exit(1);
-  });
+async function install() {
+  await download(downloadUrl, archivePath);
+  pruneLegacyLayout(); // synchronous, throws propagate naturally
+  await extractArchive(archivePath, installDir);
+  // Guard against a silent extraction (corrupt tarball, missing
+  // top-level "memos/" folder, tar 0-exit on some platforms even
+  // for empty archives). Without this check the downstream
+  // clearQuarantine + makeExecutable both no-op silently and the
+  // install would exit 0 with no usable binary.
+  if (!fs.existsSync(onedirBinary)) {
+    throw new Error(
+      `Extraction succeeded but expected binary not found at ${onedirBinary}`
+    );
+  }
+  await clearQuarantine(onedirRoot);
+  makeExecutable(onedirBinary); // synchronous
+}
+
+install().catch((error) => {
+  console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
+  console.error(error.message);
+  process.exit(1);
+});
 
 function resolveTarget() {
   const platformMap = {
@@ -110,11 +111,11 @@ function download(url, destination) {
 }
 
 function pruneLegacyLayout() {
-  // Plain synchronous function: the .then(() => pruneLegacyLayout())
-  // caller converts any thrown exception into a rejection so the
-  // outer .catch handler still sees it. Wrapping the sync fs.*Sync
-  // calls in a `new Promise((resolve) => ...)` executor with no
-  // reject path silently swallows failures — see PR #14 review.
+  // Plain synchronous function: the async install() caller lets any
+  // thrown exception bubble up as a rejected promise so the outer
+  // .catch() handler still sees it. Wrapping the sync fs.*Sync calls
+  // in a `new Promise((resolve) => ...)` executor with no reject
+  // path silently swallows failures — see PR #14 review.
 
   // Remove a stale onedir folder from a previous install so tar
   // extraction is deterministic. If fs.rmSync throws synchronously
@@ -122,8 +123,24 @@ function pruneLegacyLayout() {
   // POSIX), let it propagate — extractArchive would fail on the same
   // locked path anyway, and a clear error message is preferable to a
   // silent no-op.
+  //
+  // Use lstatSync (not statSync) so a symlink at onedirRoot is
+  // detected as a symlink instead of the directory it points to.
+  // Recursively rm-ing through a symlink would delete the *target's*
+  // contents (e.g. if a user symlinked bin/memos → some system dir).
+  // For a symlink we only unlink the link itself; for a real
+  // directory we can safely recurse.
   if (fs.existsSync(onedirRoot)) {
-    fs.rmSync(onedirRoot, { recursive: true, force: true });
+    const stat = fs.lstatSync(onedirRoot);
+    if (stat.isSymbolicLink()) {
+      fs.unlinkSync(onedirRoot);
+    } else if (stat.isDirectory()) {
+      fs.rmSync(onedirRoot, { recursive: true, force: true });
+    } else {
+      // A regular file at onedirRoot is nonsensical for the onedir
+      // layout but harmless to remove — extract would fail otherwise.
+      fs.unlinkSync(onedirRoot);
+    }
   }
   // Remove a legacy single-file drop (pre-#10 layout) so the new
   // "memos/" folder can take its place on the filesystem. This one

@@ -59,7 +59,13 @@ fi
 # up under `set -euo pipefail`.
 rm -rf "${STAGE_DIR}/memos"
 cp -R "${ROOT_DIR}/dist/memos/" "${STAGE_DIR}/memos"
-chmod +x "${STAGE_DIR}/memos/memos"
+# Defensive chmod: PyInstaller onedir may drop helper binaries next
+# to the main entry-point (e.g. bootloader-adjacent tools). cp -R
+# preserves whatever bits PyInstaller wrote, but a cross-compile or
+# an odd umask during the build could leave them without +x. Fix
+# only top-level files (maxdepth 1) so we don't over-permission
+# shared libraries in sub-folders.
+find "${STAGE_DIR}/memos" -maxdepth 1 -type f -exec chmod +x {} +
 
 if [[ "${PLATFORM}" == "darwin" ]]; then
   xattr -dr com.apple.quarantine "${STAGE_DIR}/memos" 2>/dev/null || true
