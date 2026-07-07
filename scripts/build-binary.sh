@@ -48,7 +48,13 @@ if [[ ! -d "${ROOT_DIR}/dist/memos" ]]; then
   exit 1
 fi
 
-cp -R "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
+# Trailing slash on the source makes `cp -R` copy the *contents* of
+# dist/memos/ into ${STAGE_DIR}/memos regardless of whether that
+# destination pre-exists. Without the slash, a leftover directory
+# from a partial run would end up doubly-nested at
+# ${STAGE_DIR}/memos/memos/, and the chmod on line below would then
+# target a directory and blow up under `set -euo pipefail`.
+cp -R "${ROOT_DIR}/dist/memos/" "${STAGE_DIR}/memos"
 chmod +x "${STAGE_DIR}/memos/memos"
 
 if [[ "${PLATFORM}" == "darwin" ]]; then

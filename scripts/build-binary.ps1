@@ -31,11 +31,17 @@ python -m PyInstaller --clean --noconfirm "$RootDir\memos.spec"
 # at dist/memos/ containing memos.exe plus its runtime deps.
 # Ship that folder wholesale — see issue #10 for the semctl story.
 $OneDirRoot = Join-Path $DistDir "memos"
-if (-not (Test-Path $OneDirRoot)) {
+if (-not (Test-Path $OneDirRoot -PathType Container)) {
     throw "Expected onedir folder at $OneDirRoot but none found. Did memos.spec revert to onefile? See issue #10."
 }
 
-Copy-Item -Recurse (Join-Path $DistDir "memos") (Join-Path $StageDir "memos")
+# Copy-Item -Recurse into an already-existing destination nests the
+# source *inside* it (e.g. StageDir\memos\memos\*), which breaks the
+# tar layout and postinstall extraction. Wipe any prior destination
+# so the copy is idempotent across partial re-runs.
+$StageMemos = Join-Path $StageDir "memos"
+if (Test-Path $StageMemos) { Remove-Item -Recurse -Force $StageMemos }
+Copy-Item -Recurse $OneDirRoot $StageMemos
 tar -czf $ArchivePath -C $StageDir memos
 
 Write-Host "Built onedir bundle: $(Join-Path $DistDir 'memos')"

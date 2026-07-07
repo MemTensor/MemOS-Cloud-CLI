@@ -43,6 +43,18 @@ if (!downloadUrl) {
 download(downloadUrl, archivePath)
   .then(() => pruneLegacyLayout())
   .then(() => extractArchive(archivePath, installDir))
+  .then(() => {
+    // Guard against a silent extraction (corrupt tarball, missing
+    // top-level "memos/" folder, tar 0-exit on some platforms even
+    // for empty archives). Without this check the downstream
+    // clearQuarantine + makeExecutable both no-op silently and the
+    // install would exit 0 with no usable binary.
+    if (!fs.existsSync(onedirBinary)) {
+      throw new Error(
+        `Extraction succeeded but expected binary not found at ${onedirBinary}`
+      );
+    }
+  })
   .then(() => clearQuarantine(onedirRoot))
   .then(() => makeExecutable(onedirBinary))
   .catch((error) => {
@@ -100,9 +112,18 @@ function download(url, destination) {
 function pruneLegacyLayout() {
   return new Promise((resolve) => {
     // Remove a stale onedir folder from a previous install so tar
-    // extraction is deterministic.
-    if (fs.existsSync(onedirRoot)) {
-      fs.rmSync(onedirRoot, { recursive: true, force: true });
+    // extraction is deterministic. fs.rmSync can throw synchronously
+    // (e.g. EPERM on Windows if a file inside is locked, EACCES on
+    // POSIX). Trap it here so the .catch chain in the caller does
+    // not miss the failure — this cleanup is best-effort.
+    try {
+      if (fs.existsSync(onedirRoot)) {
+        fs.rmSync(onedirRoot, { recursive: true, force: true });
+      }
+    } catch (error) {
+      console.warn(
+        `Could not remove stale onedir folder ${onedirRoot}: ${error.message}`
+      );
     }
     // Remove a legacy single-file drop (pre-#10 layout) so the new
     // "memos/" folder can take its place on the filesystem.
@@ -112,10 +133,15 @@ function pruneLegacyLayout() {
         if (stat.isFile()) {
           fs.unlinkSync(legacyBinary);
         }
-      } catch (_) {
+      } catch (error) {
         // Best-effort cleanup; failure here is not fatal because
         // extraction will overwrite what it can and the launcher
-        // still resolves the onedir path.
+        // still resolves the onedir path. Surface it as a warning
+        // so users have a signal when unexpected filesystem errors
+        // occur (permissions, locked files, ...).
+        console.warn(
+          `Could not remove legacy binary at ${legacyBinary}: ${error.message}`
+        );
       }
     }
     resolve();

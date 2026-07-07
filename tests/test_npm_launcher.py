@@ -24,7 +24,7 @@ handles the first, a maintainer handles the second after release.
 
 from __future__ import annotations
 
-import os
+import re
 import shutil
 import stat
 import subprocess
@@ -48,8 +48,8 @@ class NpmLauncherResolutionTests(unittest.TestCase):
     """Drive ``bin/memos.js`` via a real ``node`` subprocess.
 
     We copy the launcher into a fabricated package root so the
-    ``__dirname/../bin`` path resolution used by the launcher works
-    exactly like it does after ``npm install``. Each test drops a stub
+    ``__dirname`` path resolution used by the launcher works exactly
+    like it does after ``npm install``. Each test drops a stub
     executable (a shell script) into the layout it wants to exercise
     and checks stdout / stderr / exit code.
     """
@@ -81,12 +81,18 @@ class NpmLauncherResolutionTests(unittest.TestCase):
     def _write_stub(self, path: Path, exit_code: int = 0, marker: str = "") -> None:
         """Drop an executable shell script that prints ``marker`` and
         exits with ``exit_code``. Supports arbitrary ``"$@"`` args."""
+        # Defensive: markers should be simple identifiers. If a future
+        # caller passes something with shell metacharacters, printf %s
+        # below still keeps the content safe, but flag it loudly.
+        assert re.fullmatch(r"[A-Za-z0-9_]*", marker), (
+            f"Unsafe marker with shell metacharacters: {marker!r}"
+        )
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             textwrap.dedent(
                 f"""\
                 #!/usr/bin/env bash
-                echo "{marker}"
+                printf '%s\\n' '{marker}'
                 echo "args=$*"
                 exit {exit_code}
                 """
@@ -103,14 +109,19 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         )
 
     def test_resolves_onedir_binary_when_present(self) -> None:
-        """Onedir layout wins even if a decoy legacy file exists."""
+        """Onedir layout (``bin/memos/<exe>``) is picked when present.
+
+        NOTE: We do **not** exercise a "onedir wins over a legacy file"
+        priority contest here — on POSIX a directory named ``memos``
+        and a regular file named ``memos`` cannot coexist under the
+        same parent ``bin/``, so the launcher's priority ordering
+        (onedir → legacy) is only observable when exactly one of the
+        two exists. The legacy fallback path is covered separately by
+        :meth:`test_falls_back_to_legacy_single_file`.
+        """
         onedir_exe = self.pkg_root / "bin" / "memos" / "memos"
         legacy_exe = self.pkg_root / "bin" / "memos"
 
-        # Put the decoy FIRST so we exercise the "folder wins" rule.
-        # A legacy file at ``bin/memos`` can't coexist with a folder
-        # of the same name; drop the legacy file elsewhere as a decoy
-        # marker only.
         self._write_stub(onedir_exe, exit_code=0, marker="ONEDIR_HIT")
         result = self._run_launcher("show", "config")
 
@@ -118,7 +129,9 @@ class NpmLauncherResolutionTests(unittest.TestCase):
         self.assertIn("ONEDIR_HIT", result.stdout)
         self.assertIn("args=show config", result.stdout)
         # Regression guard: legacy file must NOT have been created by
-        # the launcher itself (only postinstall touches disk).
+        # the launcher itself (only postinstall touches disk). On
+        # POSIX ``bin/memos`` here is the directory holding the onedir
+        # binary, so ``is_file()`` correctly reports False.
         self.assertFalse(legacy_exe.is_file())
 
     def test_falls_back_to_legacy_single_file(self) -> None:
@@ -162,6 +175,10 @@ class SpecFileIsOnedirTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        if not SPEC_FILE.exists():
+            raise unittest.SkipTest(
+                f"{SPEC_FILE} not found — run the build first"
+            )
         cls.spec_text = SPEC_FILE.read_text()
 
     def test_spec_uses_collect(self) -> None:
