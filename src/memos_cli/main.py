@@ -1,12 +1,21 @@
 """Main CLI application — the entrypoint for `memos`."""
 from __future__ import annotations
 
-import click
-import typer
-from rich.console import Console
-from typer.core import TyperGroup
+# Force UTF-8 stdio before anything else touches sys.stdout/stderr.  The
+# PyInstaller-frozen ``memos.exe`` on Simplified Chinese Windows otherwise
+# binds stdio to CP936/GBK, corrupting CJK text (issue #15).  Importing this
+# module has no effect when the streams are already UTF-8 (Linux/macOS or a
+# console that opted in via ``PYTHONUTF8=1``).
+from memos_cli.encoding_bootstrap import ensure_utf8_stdio
 
-from memos_cli import __version__
+ensure_utf8_stdio()
+
+import click  # noqa: E402
+import typer  # noqa: E402
+from rich.console import Console  # noqa: E402
+from typer.core import TyperGroup  # noqa: E402
+
+from memos_cli import __version__  # noqa: E402
 from memos_cli.completion import register_completion_compat
 from memos_cli.commands.init import init_cmd, uninstall_cmd
 from memos_cli.commands.config_cmd import config_app
