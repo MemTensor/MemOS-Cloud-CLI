@@ -49,6 +49,14 @@ if [[ ! -d "${ROOT_DIR}/dist/memos" ]]; then
   exit 1
 fi
 
+# Defensive: `cp -R src dst` nests src inside dst when dst already exists
+# as a directory. The rm -rf on line 36 keeps the very first run clean,
+# but retries after a partial failure (PyInstaller mid-way, disk full,
+# etc.) can leave STAGE_DIR/memos behind and turn the next copy into
+# STAGE_DIR/memos/memos/... — a malformed archive that the postinstall
+# extractor happily unpacks. Clear the destination unconditionally so
+# `cp -R` always lands content directly at STAGE_DIR/memos.
+rm -rf "${STAGE_DIR}/memos"
 cp -R "${ROOT_DIR}/dist/memos" "${STAGE_DIR}/memos"
 chmod +x "${STAGE_DIR}/memos/memos"
 # cp -R preserves the source permission bits, so bundled shared libraries

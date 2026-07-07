@@ -40,6 +40,7 @@ def _node_available() -> bool:
     return shutil.which("node") is not None
 
 
+@unittest.skipIf(sys.platform == "win32", "Fake bash binaries cannot run on Windows")
 @unittest.skipUnless(_node_available(), "node is not available on PATH")
 class NpmLauncherResolutionTests(unittest.TestCase):
     """Drive the real bin/memos.js under node against a fake package root."""
@@ -129,6 +130,11 @@ class SpecFileIsOnedirTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls) -> None:
+        # A clean skip beats an opaque FileNotFoundError when running the
+        # test suite in an environment that lacks the spec file (e.g. a
+        # partial checkout or a rename in progress).
+        if not SPEC_PATH.exists():
+            raise unittest.SkipTest(f"memos.spec not found at {SPEC_PATH}")
         cls.spec_text = SPEC_PATH.read_text()
 
     def test_spec_uses_collect(self) -> None:
