@@ -34,7 +34,7 @@ class GuidancePathResolutionTests(unittest.TestCase):
                 )
                 self.assertEqual(
                     init._resolve_guidance_files("hermes"),
-                    [root / ".hermes" / "AGENTS.md"],
+                    [root / ".hermes" / "SOUL.md"],
                 )
 
     def test_codex_guidance_honors_codex_home(self) -> None:
@@ -167,6 +167,28 @@ class GuidancePathResolutionTests(unittest.TestCase):
             self.assertEqual(removed, [guidance])
             self.assertTrue(guidance.exists())
             self.assertEqual(guidance.read_text(encoding="utf-8"), "")
+
+    def test_hermes_uninstall_guidance_removes_soul_md_and_legacy_agents_blocks(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            supported = {"hermes": root / ".hermes" / "skills"}
+            soul_guidance = root / ".hermes" / "SOUL.md"
+            legacy_guidance = root / ".hermes" / "AGENTS.md"
+            for guidance in (soul_guidance, legacy_guidance):
+                guidance.parent.mkdir(parents=True, exist_ok=True)
+                guidance.write_text(
+                    "keep before\n\n"
+                    f"{init.GUIDANCE_START}\nmanaged\n{init.GUIDANCE_END}\n\n"
+                    "keep after\n",
+                    encoding="utf-8",
+                )
+
+            with patch.dict(init.SUPPORTED_SKILL_AGENTS, supported, clear=True):
+                removed = init._uninstall_agent_guidance("hermes")
+
+            self.assertEqual(removed, [soul_guidance, legacy_guidance])
+            for guidance in removed:
+                self.assertEqual(guidance.read_text(encoding="utf-8"), "keep before\n\nkeep after\n")
 
     def test_remove_bundled_skills_removes_memos_memory_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:

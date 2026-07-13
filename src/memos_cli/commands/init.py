@@ -50,7 +50,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "cursor":      AgentConfig(Path.home() / ".cursor" / "skills",                   "AGENTS.md"),
     "claude":      AgentConfig(Path.home() / ".claude" / "skills",                   "CLAUDE.md"),
     "openclaw":    AgentConfig(Path.home() / ".openclaw" / "skills",                 "AGENTS.md"),
-    "hermes":      AgentConfig(Path.home() / ".hermes" / "skills",                   "AGENTS.md"),
+    "hermes":      AgentConfig(Path.home() / ".hermes" / "skills",                   "SOUL.md"),
     "trae":        AgentConfig(Path.home() / ".trae" / "skills",                     "memos.md",
                                Path.home() / ".trae" / "rules", "standalone"),
     "trae-cn":     AgentConfig(Path.home() / ".trae-cn" / "skills",                  "memos.md",
@@ -192,6 +192,19 @@ def _resolve_openclaw_guidance_files() -> list[Path]:
     return sorted(guidance_files)
 
 
+def _resolve_uninstall_guidance_files(agent: str) -> list[Path]:
+    """Resolve guidance files to clean during uninstall, including legacy targets."""
+    guidance_files = list(_resolve_guidance_files(agent))
+    normalized = agent.strip().lower()
+
+    if normalized == "hermes":
+        legacy_guidance = _resolve_skills_dir(agent).parent / "AGENTS.md"
+        if legacy_guidance not in guidance_files:
+            guidance_files.append(legacy_guidance)
+
+    return guidance_files
+
+
 def _build_agent_guidance(agent: str) -> str:
     """Build agent-specific MemOS CLI guidance content from template."""
     template = _guidance_template_path().read_text(encoding="utf-8")
@@ -308,7 +321,7 @@ def _uninstall_agent_guidance(agent: str) -> list[Path]:
     )
     removed: list[Path] = []
 
-    for guidance_file in _resolve_guidance_files(agent):
+    for guidance_file in _resolve_uninstall_guidance_files(agent):
         if cfg.guidance_mode == "standalone":
             changed = _remove_standalone_guidance(guidance_file)
         else:

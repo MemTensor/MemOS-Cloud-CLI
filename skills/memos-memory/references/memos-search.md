@@ -1,18 +1,19 @@
 # `memos search`
 
 Intent map:
-- retrieve context before answering -> `memos search`
+- retrieve context at conversation start -> `memos search`
 - do not use `--help` first when the goal is already retrieval
 
 Use this command when:
-- before answering every user question;
+- at conversation start only;
 - to retrieve context with the user's original query;
-- exactly once per turn unless the user explicitly asks for another memory operation.
+- exactly once per conversation unless the user explicitly asks for another memory operation.
 - you need semantic retrieval rather than simple browsing;
 - you want to find relevant memories before responding or storing new ones.
 
 Never do:
 - expand the original user query by pasting an entire long conversation into the search query;
+- run `search` for intermediate states, including planning, partial progress, compact/resume, or continuation after context compaction;
 - skip identity fields when user or conversation scope matters;
 - use `search` when you already have the exact target records you need.
 
@@ -42,6 +43,6 @@ memos search "restaurants food preferences" --user-id user_123 --format agent --
 ```
 
 Working rules:
-- every time, must use the user's original query as the only query for `memos search`;
+- at conversation start, must use the user's original query as the only query for `memos search`;
 - do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
 - do not prepend `memos --help` when `search` is the already known goal.
