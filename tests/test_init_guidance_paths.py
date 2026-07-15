@@ -190,6 +190,230 @@ class GuidancePathResolutionTests(unittest.TestCase):
             for guidance in removed:
                 self.assertEqual(guidance.read_text(encoding="utf-8"), "keep before\n\nkeep after\n")
 
+    def test_resolve_memos_bin_dir_prefers_current_command_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            current = root / "package" / "bin" / "memos"
+            current.parent.mkdir(parents=True)
+            current.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            other = root / "global" / "bin" / "memos"
+            other.parent.mkdir(parents=True)
+            other.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            with patch.object(init.sys, "argv", [str(current)]):
+                with patch.object(init.shutil, "which", return_value=str(other)):
+                    self.assertEqual(
+                        init._resolve_memos_bin_dir(),
+                        str(current.parent),
+                    )
+
+    def test_resolve_memos_bin_dir_uses_memos_from_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            memos = root / "custom-global" / "bin" / "memos"
+            memos.parent.mkdir(parents=True)
+            memos.write_text("#!/bin/sh\n", encoding="utf-8")
+
+            def fake_which(name: str) -> str | None:
+                return str(memos) if name == "memos" else None
+
+            with patch.object(init.sys, "argv", ["memos"]):
+                with patch.object(init.shutil, "which", side_effect=fake_which):
+                    self.assertEqual(
+                        init._resolve_memos_bin_dir(),
+                        str(memos.parent),
+                    )
+
+    def test_resolve_memos_bin_dir_falls_back_to_npm_prefix(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            npm_prefix = root / "node-prefix"
+
+            class Result:
+                returncode = 0
+                stdout = f"{npm_prefix}\n"
+
+            def fake_which(name: str) -> str | None:
+                return "/usr/bin/npm" if name == "npm" else None
+
+            with patch.object(init.sys, "argv", ["memos"]):
+                with patch.object(init.sys, "executable", "/usr/bin/python"):
+                    with patch.object(init.shutil, "which", side_effect=fake_which):
+                        with patch.object(init.subprocess, "run", return_value=Result()):
+                            self.assertEqual(
+                                init._resolve_memos_bin_dir(),
+                                str(npm_prefix / "bin"),
+                            )
+
+    def test_init_skips_shell_path_when_memos_bin_dir_is_unavailable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(init.Path, "home", return_value=root):
+                with patch.object(init, "_resolve_memos_bin_dir", return_value=None):
+                    self.assertEqual(init._install_shell_path_entries("cursor"), [])
+
+            self.assertFalse((root / ".bash_profile").exists())
+            self.assertFalse((root / ".zshenv").exists())
+
+    def test_init_installs_shell_path_block_for_any_agent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = str(root / "node" / "bin")
+            with patch.object(init.Path, "home", return_value=root):
+                with patch.object(init, "_resolve_memos_bin_dir", return_value=bin_dir):
+                    updated = init._install_shell_path_entries("cursor")
+
+            self.assertEqual(updated, [root / ".bash_profile", root / ".zshenv"])
+            for path in updated:
+                content = path.read_text(encoding="utf-8")
+                self.assertIn(init.SHELL_PATH_START, content)
+                self.assertIn(init.SHELL_PATH_END, content)
+                self.assertIn(f"{init.SHELL_MEMOS_BIN_VAR}={bin_dir}", content)
+                self.assertIn(f'export PATH="${init.SHELL_MEMOS_BIN_VAR}:$PATH"', content)
+
+    def test_init_shell_path_entries_are_idempotent(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = str(root / "node" / "bin")
+            with patch.object(init.Path, "home", return_value=root):
+                with patch.object(init, "_resolve_memos_bin_dir", return_value=bin_dir):
+                    first = init._install_shell_path_entries("cursor")
+                    second = init._install_shell_path_entries("claude")
+
+            self.assertEqual(first, [root / ".bash_profile", root / ".zshenv"])
+            self.assertEqual(second, [])
+            for path in (root / ".bash_profile", root / ".zshenv"):
+                content = path.read_text(encoding="utf-8")
+                self.assertEqual(content.count(init.SHELL_PATH_START), 1)
+                self.assertEqual(content.count(init.SHELL_PATH_END), 1)
+
+    def test_init_skips_existing_shell_path_line(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = str(root / "node" / "bin")
+            bash_profile = root / ".bash_profile"
+            bash_profile.parent.mkdir(parents=True, exist_ok=True)
+            bash_profile.write_text(
+                f'export PATH="{bin_dir}:$PATH"\n',
+                encoding="utf-8",
+            )
+
+            with patch.object(init.Path, "home", return_value=root):
+                with patch.object(init, "_resolve_memos_bin_dir", return_value=bin_dir):
+                    updated = init._install_shell_path_entries("claude")
+
+            self.assertEqual(updated, [root / ".zshenv"])
+            self.assertEqual(
+                bash_profile.read_text(encoding="utf-8"),
+                f'export PATH="{bin_dir}:$PATH"\n',
+            )
+
+    def test_init_skips_existing_equivalent_shell_path_entries(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bin_dir = str(root / ".npm-global" / "bin")
+            bash_profile = root / ".bash_profile"
+            zshenv = root / ".zshenv"
+            bash_profile.write_text(
+                f'export PATH="{bin_dir}:$PATH"\n',
+                encoding="utf-8",
+            )
+            zshenv.write_text(
+                'case ":$PATH:" in\n'
+                "  *:${HOME}/.npm-global/bin:*) ;;\n"
+                '  *) export PATH="${HOME}/.npm-global/bin:$PATH" ;;\n'
+                "esac\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(init.Path, "home", return_value=root):
+                with patch.object(init, "_resolve_memos_bin_dir", return_value=bin_dir):
+                    updated = init._install_shell_path_entries("cursor")
+
+            self.assertEqual(updated, [])
+            self.assertNotIn(init.SHELL_PATH_START, bash_profile.read_text(encoding="utf-8"))
+            self.assertNotIn(init.SHELL_PATH_START, zshenv.read_text(encoding="utf-8"))
+
+    def test_uninstall_shell_path_helper_removes_blocks_only(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bash_profile = root / ".bash_profile"
+            zshenv = root / ".zshenv"
+            block = init._build_shell_path_block(str(root / "node" / "bin"))
+            for path in (bash_profile, zshenv):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "keep before\n\n"
+                    f"{block}\n"
+                    "keep after\n",
+                    encoding="utf-8",
+                )
+
+            with patch.object(init.Path, "home", return_value=root):
+                removed = init._uninstall_shell_path_entries("cursor")
+
+            self.assertEqual(removed, [bash_profile, zshenv])
+            for path in removed:
+                self.assertEqual(path.read_text(encoding="utf-8"), "keep before\n\nkeep after\n")
+
+    def test_uninstall_keeps_shell_path_by_default(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            supported = {"cursor": root / ".cursor" / "skills"}
+            bash_profile = root / ".bash_profile"
+            zshenv = root / ".zshenv"
+            block = init._build_shell_path_block(str(root / "node" / "bin"))
+            for path in (bash_profile, zshenv):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "keep before\n\n"
+                    f"{block}\n"
+                    "keep after\n",
+                    encoding="utf-8",
+                )
+
+            with patch.dict(init.SUPPORTED_SKILL_AGENTS, supported, clear=True):
+                with patch.object(init.Path, "home", return_value=root):
+                    init.uninstall_cmd(
+                        agent="cursor",
+                        yes=True,
+                        remove_config=False,
+                        remove_path=False,
+                    )
+
+            for path in (bash_profile, zshenv):
+                self.assertIn(init.SHELL_PATH_START, path.read_text(encoding="utf-8"))
+
+    def test_uninstall_removes_shell_path_only_with_path_flag(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            supported = {"cursor": root / ".cursor" / "skills"}
+            bash_profile = root / ".bash_profile"
+            zshenv = root / ".zshenv"
+            block = init._build_shell_path_block(str(root / "node" / "bin"))
+            for path in (bash_profile, zshenv):
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text(
+                    "keep before\n\n"
+                    f"{block}\n"
+                    "keep after\n",
+                    encoding="utf-8",
+                )
+
+            with patch.dict(init.SUPPORTED_SKILL_AGENTS, supported, clear=True):
+                with patch.object(init.Path, "home", return_value=root):
+                    init.uninstall_cmd(
+                        agent="cursor",
+                        yes=True,
+                        remove_config=False,
+                        remove_path=True,
+                    )
+
+            for path in (bash_profile, zshenv):
+                self.assertNotIn(init.SHELL_PATH_START, path.read_text(encoding="utf-8"))
+                self.assertEqual(path.read_text(encoding="utf-8"), "keep before\n\nkeep after\n")
+
     def test_remove_bundled_skills_removes_memos_memory_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -261,13 +485,18 @@ class InitConfigResolutionTests(unittest.TestCase):
                                             "_install_agent_guidance",
                                             return_value=[Path(temp_dir) / "AGENTS.md"],
                                         ):
-                                            init.init_cmd(
-                                                api_key=None,
-                                                user_id=None,
-                                                conversation_id=None,
-                                                memos_plugin=False,
-                                                agent="cursor",
-                                            )
+                                            with patch.object(
+                                                init,
+                                                "_install_shell_path_entries",
+                                                return_value=[],
+                                            ) as install_shell_path_entries:
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="cursor",
+                                                )
 
             self.assertEqual(len(prompts), 3)
             self.assertEqual(saved_configs[0].platform.api_key, "existing-api-key")
@@ -278,6 +507,7 @@ class InitConfigResolutionTests(unittest.TestCase):
                 "existing-conversation",
             )
             self.assertEqual(saved_configs[0].defaults.framework, "cursor")
+            install_shell_path_entries.assert_called_once_with("cursor")
 
     def test_init_requires_api_key_when_no_complete_existing_config(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -340,13 +570,18 @@ class InitConfigResolutionTests(unittest.TestCase):
                                             "_install_agent_guidance",
                                             return_value=[Path(temp_dir) / "AGENTS.md"],
                                         ):
-                                            init.init_cmd(
-                                                api_key=None,
-                                                user_id=None,
-                                                conversation_id=None,
-                                                memos_plugin=False,
-                                                agent="cursor",
-                                            )
+                                            with patch.object(
+                                                init,
+                                                "_install_shell_path_entries",
+                                                return_value=[],
+                                            ):
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="cursor",
+                                                )
 
             self.assertEqual(prompt.call_count, 3)
             self.assertEqual(saved_configs[0].platform.api_key, "entered-api-key")
@@ -402,13 +637,18 @@ class InitConfigResolutionTests(unittest.TestCase):
                                                 "_install_agent_guidance",
                                                 return_value=[root / "AGENTS.md"],
                                             ):
-                                                init.init_cmd(
-                                                    api_key=None,
-                                                    user_id=None,
-                                                    conversation_id=None,
-                                                    memos_plugin=False,
-                                                    agent="cursor",
-                                                )
+                                                with patch.object(
+                                                    init,
+                                                    "_install_shell_path_entries",
+                                                    return_value=[],
+                                                ):
+                                                    init.init_cmd(
+                                                        api_key=None,
+                                                        user_id=None,
+                                                        conversation_id=None,
+                                                        memos_plugin=False,
+                                                        agent="cursor",
+                                                    )
 
             self.assertEqual(prompt.call_count, 3)
             self.assertEqual(saved_configs[0].platform.api_key, "entered-api-key")

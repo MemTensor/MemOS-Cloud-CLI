@@ -6,7 +6,7 @@ description: Provide universal memory capabilities for different AI agents and d
 # MemOS Memory Protocol
 
 Command selection rules:
-- if the user asks to uninstall, disable, remove, or stop using MemOS, use `memos uninstall --agent <current_agent> --yes` directly and do not run `memos search` or `memos add` for that turn;
+- if the user asks to uninstall, disable, remove, or stop using MemOS, use `memos uninstall --agent <current_agent> --yes` directly and do not run `memos search` or `memos add` for that turn; add `--path` only when the user also wants to remove the MemOS PATH entries from `~/.bash_profile` and `~/.zshenv`;
 - if the user wants to preview what would be stored, use `memos extract` directly;
 - at the start of a conversation, must use `memos search` directly with the user's original query;
 - at the end of a conversation, must use `memos add` directly with both the user's question and the assistant's final answer;
@@ -62,6 +62,7 @@ Command examples:
 - `memos delete <MEMORY_ID> --format json`
 - `memos delete --user-id <USER_ID> --format json`
 - `memos uninstall --agent <CURRENT_AGENT> --yes`
+- `memos uninstall --agent <CURRENT_AGENT> --yes --path`
 - `memos kb create --name "<name>" --description "<desc>" --format json`
 - `memos kb remove <KB_ID> --format json`
 - `memos kb add-file --kb-id <KB_ID> --files '["https://example.com/doc.pdf"]' --format json`
@@ -158,6 +159,10 @@ memos delete <MEMORY_ID> --format json
 
 ```bash
 memos uninstall --agent codex --yes
+```
+
+```bash
+memos uninstall --agent codex --yes --path
 ```
 
 ```bash
