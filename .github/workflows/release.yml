@@ -2,6 +2,17 @@ name: release
 
 on:
   workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, with or without the leading v (e.g. 1.0.5 or v1.0.5)"
+        required: true
+      git_ref:
+        description: "Git ref to release from. Leave blank to use the branch selected above."
+        required: false
+        default: ""
+      release_notes:
+        description: "Markdown release notes for GitHub Release and docs changelog. Include a ## Changelog section."
+        required: true
   push:
     tags:
       - "v*"
@@ -10,7 +21,64 @@ permissions:
   contents: write
 
 jobs:
+  release-metadata:
+    runs-on: ubuntu-22.04
+    outputs:
+      tag_name: ${{ steps.metadata.outputs.tag_name }}
+      release_title: ${{ steps.metadata.outputs.release_title }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+
+      - name: Prepare release metadata
+        id: metadata
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES: ${{ inputs.release_notes }}
+        run: |
+          set -euo pipefail
+
+          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
+            if [ -z "${RELEASE_VERSION}" ]; then
+              echo "::error::version is required for manual release."
+              exit 1
+            fi
+            if [ -z "$(printf '%s' "${RELEASE_NOTES}" | tr -d '[:space:]')" ]; then
+              echo "::error::release_notes is required so Doc Agent can update docs."
+              exit 1
+            fi
+
+            normalized_version="${RELEASE_VERSION#v}"
+            tag_name="v${normalized_version}"
+            printf '%s\n' "${RELEASE_NOTES}" > release-notes.md
+
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            if git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" >/dev/null 2>&1; then
+              echo "Tag ${tag_name} already exists on origin; leaving it unchanged."
+            else
+              git tag "${tag_name}"
+              git push origin "refs/tags/${tag_name}"
+            fi
+          else
+            tag_name="${GITHUB_REF_NAME}"
+            printf '' > release-notes.md
+          fi
+
+          echo "tag_name=${tag_name}" >> "${GITHUB_OUTPUT}"
+          echo "release_title=MemOS CLI ${tag_name}" >> "${GITHUB_OUTPUT}"
+
+      - name: Upload release notes
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes.md
+
   build:
+    needs: release-metadata
     strategy:
       fail-fast: false
       matrix:
@@ -26,6 +94,8 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
 
       - uses: actions/setup-python@v5
         with:
@@ -48,8 +118,25 @@ jobs:
           name: ${{ matrix.upload_name }}
           path: dist/*.tar.gz
 
-      - name: Upload release assets
+      - name: Download release notes
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/download-artifact@v4
+        with:
+          name: release-notes
+          path: release-notes
+
+      - name: Upload release assets for manual release
+        if: github.event_name == 'workflow_dispatch'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.release-metadata.outputs.tag_name }}
+          name: ${{ needs.release-metadata.outputs.release_title }}
+          body_path: release-notes/release-notes.md
+          files: dist/*.tar.gz
+
+      - name: Upload release assets for tag release
         if: startsWith(github.ref, 'refs/tags/')
         uses: softprops/action-gh-release@v2
         with:
           files: dist/*.tar.gz
+          generate_release_notes: true
