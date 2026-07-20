@@ -6,10 +6,11 @@ description: Provide universal memory capabilities for different AI agents and d
 # MemOS Memory Protocol
 
 Command selection rules:
-- if the user asks to uninstall, disable, remove, or stop using MemOS, use `memos uninstall --agent <current_agent> --yes` directly and do not run `memos search` or `memos add` for that turn;
+- if the user asks to uninstall, disable, remove, or stop using MemOS, use `memos uninstall --agent <current_agent> --yes` directly and do not run `memos search` or `memos add` for that turn; add `--path` only when the user also wants to remove the MemOS PATH entries from `~/.bash_profile` and `~/.zshenv`;
 - if the user wants to preview what would be stored, use `memos extract` directly;
-- before answering any user question, must use `memos search` directly with the user's original query;
-- after answering any user question, must use `memos add` directly with both the user's question and the assistant's final answer;
+- at the start of a conversation, must use `memos search` directly with the user's original query;
+- at the end of a conversation, must use `memos add` directly with both the user's question and the assistant's final answer;
+- do not run `memos search` or `memos add` for intermediate states, including planning, partial progress, compact/resume, or continuation after context compaction;
 - if the user wants a memory-aware response from MemOS itself, use `memos chat` directly;
 - if the user already has a concrete memory id, use `memos get`, `memos origin`, or `memos delete` directly;
 - if the user wants to manage knowledge bases (create, delete, upload, query files), use the corresponding `memos kb` subcommand;
@@ -24,7 +25,7 @@ Identity rules:
 Hard mapping:
 - store a durable fact, preference, decision, or long-term task -> `memos add`
 - preview candidate memories before storing -> `memos extract`
-- retrieve context before answering -> `memos search`
+- retrieve context at conversation start -> `memos search`
 - ask MemOS to answer with memory context -> `memos chat`
 - fetch memories by user_id -> `memos get`
 - trace where one memory came from -> `memos origin`
@@ -61,6 +62,7 @@ Command examples:
 - `memos delete <MEMORY_ID> --format json`
 - `memos delete --user-id <USER_ID> --format json`
 - `memos uninstall --agent <CURRENT_AGENT> --yes`
+- `memos uninstall --agent <CURRENT_AGENT> --yes --path`
 - `memos kb create --name "<name>" --description "<desc>" --format json`
 - `memos kb remove <KB_ID> --format json`
 - `memos kb add-file --kb-id <KB_ID> --files '["https://example.com/doc.pdf"]' --format json`
@@ -71,7 +73,7 @@ Command examples:
 Choose commands by intent:
 - use [`./references/memos-add.md`](./references/memos-add.md) when the user gives a durable fact or preference worth saving;
 - use [`./references/memos-extract.md`](./references/memos-extract.md) when the user wants a preview of memory candidates without storing;
-- must use [`./references/memos-search.md`](./references/memos-search.md) before answering;
+- must use [`./references/memos-search.md`](./references/memos-search.md) at conversation start;
 - use [`./references/memos-chat.md`](./references/memos-chat.md) when interacting with MemOS chat capability directly;
 - use [`./references/memos-get.md`](./references/memos-get.md) for retrieval by `user_id`;
 - use [`./references/memos-origin.md`](./references/memos-origin.md) when you need the original source messages behind a specific memory;
@@ -85,10 +87,10 @@ Choose commands by intent:
 - use [`./references/memos-kb-delete-file.md`](./references/memos-kb-delete-file.md) to delete files from a knowledge base.
 
 Process rules:
-- the default workflow is: search before answering, answer second, then add after answering;
-- when you add after answering, must pass both the user's question and the assistant's final answer into `memos add` so the extractor can decide what is worth keeping;
-- must not skip `add` just because the current turn does not obviously contain a durable fact;
-- per turn, keep memory-tool usage bounded: at most 1 original-query `search` call and at most 1 `add` call after answering;
+- the default workflow is: search at conversation start, work and answer through intermediate states without additional search/add, then add at conversation end;
+- when you add at conversation end, must pass both the user's question and the assistant's final answer into `memos add` so the extractor can decide what is worth keeping;
+- must not skip `add` at conversation end just because the current turn does not obviously contain a durable fact;
+- per conversation, keep memory-tool usage bounded: at most 1 original-query `search` call at the start and at most 1 `add` call at the end;
 - do not chain additional memory tools in the same turn unless the user explicitly asks for that specific operation;
 - `extract` is only for previewing candidates, not for storing;
 - `feedback` is a separate command and should only be used when the user explicitly wants feedback storage;
@@ -96,8 +98,8 @@ Process rules:
 
 Intent map:
 - preview what would be stored -> `memos extract`
-- retrieve context before answering -> `memos search`
-- store after answering -> `memos add`
+- retrieve context at conversation start -> `memos search`
+- store at conversation end -> `memos add`
 - get memories by `user_id` -> `memos get`
 - trace where a memory came from -> `memos origin`
 - delete one concrete memory -> `memos delete`
@@ -114,7 +116,7 @@ Intent map:
 Working rules:
 - must use the user's original query as the only query for `memos search`;
 - do not rewrite, summarize, keyword-compress, retry, or run an additional search query;
-- `memos add` uses a `messages` array payload; when adding after a turn, include both the user's question and the assistant's answer in that array;
+- `memos add` uses a `messages` array payload; when adding at conversation end, include both the user's question and the assistant's answer in that array;
 - in the `memos add` payload, the user message content must exactly match the original user query;
 - in the `memos add` payload, the assistant message content must exactly match the final answer sent to the user; do not rewrite, summarize, compress, or modify it;
 - when `--format` is omitted, treat the default as `agent`;
@@ -157,6 +159,10 @@ memos delete <MEMORY_ID> --format json
 
 ```bash
 memos uninstall --agent codex --yes
+```
+
+```bash
+memos uninstall --agent codex --yes --path
 ```
 
 ```bash

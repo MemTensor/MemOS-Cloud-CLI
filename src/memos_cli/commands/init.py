@@ -2,7 +2,9 @@
 from __future__ import annotations
 
 import os
+import shlex
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -34,6 +36,9 @@ console = Console()
 DEFAULT_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
 GUIDANCE_START = "<!-- MEMOS_CLI:START -->"
 GUIDANCE_END = "<!-- MEMOS_CLI:END -->"
+SHELL_PATH_START = "# >>> MEMOS_CLI PATH >>>"
+SHELL_PATH_END = "# <<< MEMOS_CLI PATH <<<"
+SHELL_MEMOS_BIN_VAR = "__memos_cli_bin_dir"
 
 @dataclass(frozen=True)
 class AgentConfig:
@@ -50,7 +55,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "cursor":      AgentConfig(Path.home() / ".cursor" / "skills",                   "AGENTS.md"),
     "claude":      AgentConfig(Path.home() / ".claude" / "skills",                   "CLAUDE.md"),
     "openclaw":    AgentConfig(Path.home() / ".openclaw" / "skills",                 "AGENTS.md"),
-    "hermes":      AgentConfig(Path.home() / ".hermes" / "skills",                   "AGENTS.md"),
+    "hermes":      AgentConfig(Path.home() / ".hermes" / "skills",                   "SOUL.md"),
     "trae":        AgentConfig(Path.home() / ".trae" / "skills",                     "memos.md",
                                Path.home() / ".trae" / "rules", "standalone"),
     "trae-cn":     AgentConfig(Path.home() / ".trae-cn" / "skills",                  "memos.md",
@@ -192,6 +197,187 @@ def _resolve_openclaw_guidance_files() -> list[Path]:
     return sorted(guidance_files)
 
 
+def _resolve_uninstall_guidance_files(agent: str) -> list[Path]:
+    """Resolve guidance files to clean during uninstall, including legacy targets."""
+    guidance_files = list(_resolve_guidance_files(agent))
+    normalized = agent.strip().lower()
+
+    if normalized == "hermes":
+        legacy_guidance = _resolve_skills_dir(agent).parent / "AGENTS.md"
+        if legacy_guidance not in guidance_files:
+            guidance_files.append(legacy_guidance)
+
+    return guidance_files
+
+
+def _resolve_shell_path_files(agent: str) -> list[Path]:
+    """Resolve shell startup files that should carry the MemOS PATH entry."""
+    return [Path.home() / ".bash_profile", Path.home() / ".zshenv"]
+
+
+def _format_shell_path(path: Path) -> str:
+    """Format a filesystem path for shell startup files."""
+    return str(path.expanduser())
+
+
+def _memos_command_parent(command_path: str | os.PathLike[str]) -> str | None:
+    """Return the containing directory when a path points to the memos command."""
+    path = Path(command_path).expanduser()
+    if path.name.lower() not in {"memos", "memos.exe"}:
+        return None
+    if not path.exists():
+        return None
+    return _format_shell_path(path.parent)
+
+
+def _npm_global_bin_dir() -> str | None:
+    """Resolve npm's real global bin directory from the active npm prefix."""
+    npm_path = shutil.which("npm")
+    if not npm_path:
+        return None
+    try:
+        result = subprocess.run(
+            [npm_path, "prefix", "-g"],
+            capture_output=True,
+            check=False,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    prefix = result.stdout.strip()
+    if not prefix:
+        return None
+    return _format_shell_path(Path(prefix) / "bin")
+
+
+def _resolve_memos_bin_dir() -> str | None:
+    """Resolve the actual directory that provides the memos command."""
+    argv0 = sys.argv[0] if sys.argv else ""
+    if argv0:
+        argv_path = Path(argv0)
+        if argv_path.is_absolute() or argv_path.parent != Path("."):
+            bin_dir = _memos_command_parent(argv_path)
+            if bin_dir:
+                return bin_dir
+
+    which_memos = shutil.which("memos")
+    if which_memos:
+        bin_dir = _memos_command_parent(which_memos)
+        if bin_dir:
+            return bin_dir
+
+    executable = Path(sys.executable)
+    bin_dir = _memos_command_parent(executable)
+    if bin_dir:
+        return bin_dir
+
+    npm_bin_dir = _npm_global_bin_dir()
+    if npm_bin_dir:
+        return npm_bin_dir
+
+    return None
+
+
+def _build_shell_path_block(bin_dir: str) -> str:
+    """Build a managed shell snippet that prepends the MemOS bin directory."""
+    quoted_bin_dir = shlex.quote(bin_dir)
+    return (
+        f"{SHELL_PATH_START}\n"
+        f"{SHELL_MEMOS_BIN_VAR}={quoted_bin_dir}\n"
+        'case ":$PATH:" in\n'
+        f'  *:"${SHELL_MEMOS_BIN_VAR}":*) ;;\n'
+        f'  *) export PATH="${SHELL_MEMOS_BIN_VAR}:$PATH" ;;\n'
+        "esac\n"
+        f"unset {SHELL_MEMOS_BIN_VAR}\n"
+        f"{SHELL_PATH_END}\n"
+    )
+
+
+def _shell_path_variants(bin_dir: str) -> set[str]:
+    """Return common shell spellings for a bin directory."""
+    variants = {bin_dir}
+    home = str(Path.home())
+    if bin_dir == home:
+        variants.update({"$HOME", "${HOME}", "~"})
+    elif bin_dir.startswith(home + os.sep):
+        suffix = bin_dir[len(home):]
+        variants.update({f"$HOME{suffix}", f"${{HOME}}{suffix}", f"~{suffix}"})
+    return variants
+
+
+def _has_existing_shell_path_entry(content: str, bin_dir: str) -> bool:
+    """Return whether a shell file already references the MemOS bin directory."""
+    memos_bin_variants = _shell_path_variants(bin_dir)
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#"):
+            continue
+        if any(variant in stripped for variant in memos_bin_variants):
+            return True
+    return False
+
+
+def _upsert_shell_path_block(path: Path, content: str, bin_dir: str) -> bool:
+    """Insert or replace the managed MemOS PATH block in a shell file."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    if SHELL_PATH_START in existing and SHELL_PATH_END in existing:
+        start = existing.index(SHELL_PATH_START)
+        end = existing.index(SHELL_PATH_END) + len(SHELL_PATH_END)
+        if existing[start:end].strip() == content.rstrip():
+            return False
+        updated = f"{existing[:start].rstrip()}\n\n{content}\n{existing[end:].lstrip()}"
+    elif _has_existing_shell_path_entry(existing, bin_dir):
+        return False
+    else:
+        prefix = existing.rstrip()
+        updated = f"{prefix}\n\n{content}" if prefix else content
+    path.write_text(updated.rstrip() + "\n", encoding="utf-8")
+    return True
+
+
+def _remove_shell_path_block(path: Path) -> bool:
+    """Remove the managed MemOS PATH block from a shell file."""
+    if not path.exists():
+        return False
+
+    existing = path.read_text(encoding="utf-8")
+    if SHELL_PATH_START not in existing or SHELL_PATH_END not in existing:
+        return False
+
+    start = existing.index(SHELL_PATH_START)
+    end = existing.index(SHELL_PATH_END) + len(SHELL_PATH_END)
+    updated = f"{existing[:start].rstrip()}\n\n{existing[end:].lstrip()}".strip()
+
+    path.write_text((updated + "\n") if updated else "", encoding="utf-8")
+    return True
+
+
+def _install_shell_path_entries(agent: str) -> list[Path]:
+    """Install the MemOS CLI PATH entry into shell startup files."""
+    updated_files: list[Path] = []
+    bin_dir = _resolve_memos_bin_dir()
+    if not bin_dir:
+        return updated_files
+    content = _build_shell_path_block(bin_dir)
+    for path in _resolve_shell_path_files(agent):
+        if _upsert_shell_path_block(path, content, bin_dir):
+            updated_files.append(path)
+    return updated_files
+
+
+def _uninstall_shell_path_entries(agent: str) -> list[Path]:
+    """Remove managed MemOS CLI PATH entries from shell startup files."""
+    removed_files: list[Path] = []
+    for path in _resolve_shell_path_files(agent):
+        if _remove_shell_path_block(path):
+            removed_files.append(path)
+    return removed_files
+
+
 def _build_agent_guidance(agent: str) -> str:
     """Build agent-specific MemOS CLI guidance content from template."""
     template = _guidance_template_path().read_text(encoding="utf-8")
@@ -308,7 +494,7 @@ def _uninstall_agent_guidance(agent: str) -> list[Path]:
     )
     removed: list[Path] = []
 
-    for guidance_file in _resolve_guidance_files(agent):
+    for guidance_file in _resolve_uninstall_guidance_files(agent):
         if cfg.guidance_mode == "standalone":
             changed = _remove_standalone_guidance(guidance_file)
         else:
@@ -540,6 +726,7 @@ def init_cmd(
         console.print(f"\n[red]Error:[/] {exc}")
         raise typer.Exit(1)
     guidance_paths = _install_agent_guidance(agent, memos_plugin=memos_plugin)
+    shell_path_files = _install_shell_path_entries(agent)
 
     console.print("\n[green]✓[/] Configuration saved successfully!")
     console.print(f"  Config file: [dim]~/.memos/config.yaml[/]")
@@ -549,6 +736,10 @@ def init_cmd(
     console.print(f"  MemOS plugin: [dim]{'enabled' if memos_plugin else 'disabled'}[/]")
     console.print(f"  Installed skill: [dim]{skills_path / 'memos-memory'}[/]")
     console.print(f"  Agent guidance: [dim]{', '.join(str(path) for path in guidance_paths)}[/]")
+    if shell_path_files:
+        console.print(
+            f"  Shell PATH files: [dim]{', '.join(str(path) for path in shell_path_files)}[/]"
+        )
     console.print("  Shell completion: [dim]Skipped (disabled during init)[/]")
     if has_complete_existing_config:
         console.print(
@@ -569,6 +760,11 @@ def uninstall_cmd(
         False,
         "--remove-config",
         help="Also remove ~/.memos/config.yaml.",
+    ),
+    remove_path: bool = typer.Option(
+        False,
+        "--path",
+        help="Also remove managed PATH entries from ~/.bash_profile and ~/.zshenv.",
     ),
 ):
     """Uninstall MemOS agent integration without removing the npm package itself."""
@@ -598,6 +794,7 @@ def uninstall_cmd(
 
     removed_skills = _remove_bundled_skills(agent)
     removed_guidance = _uninstall_agent_guidance(agent)
+    removed_shell_path_files = _uninstall_shell_path_entries(agent) if remove_path else []
     removed_config = _remove_config_file() if remove_config else None
 
     console.print("\n[green]✓[/] MemOS agent integration removed.")
@@ -610,6 +807,14 @@ def uninstall_cmd(
         console.print(f"  Cleaned guidance: [dim]{', '.join(str(path) for path in removed_guidance)}[/]")
     else:
         console.print("  Cleaned guidance: [dim]Nothing found[/]")
+
+    if remove_path:
+        if removed_shell_path_files:
+            console.print(
+                f"  Cleaned shell PATH: [dim]{', '.join(str(path) for path in removed_shell_path_files)}[/]"
+            )
+        else:
+            console.print("  Cleaned shell PATH: [dim]Nothing found[/]")
 
     if remove_config:
         if removed_config:
