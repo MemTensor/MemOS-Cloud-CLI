@@ -97,6 +97,7 @@ def search(
     tool_memory_limit_number: int | None = typer.Option(None, "--tool-memory-limit-number", min=1, help="Tool memory recall count"),
     include_skill_memory: str | None = typer.Option(None, "--include-skill-memory", help="Include skill memory: true or false"),
     skill_memory_limit_number: int | None = typer.Option(None, "--skill-memory-limit-number", min=1, help="Skill memory recall count"),
+    knowledgebase_ids: str | None = typer.Option(None, "--knowledgebase-ids", help="Knowledge base IDs as a JSON array"),
     output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
     detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
 ):
@@ -107,7 +108,7 @@ def search(
         user_id=user_id,
         conversation_id=None,
         filter_json=None,
-        knowledgebase_ids=None,
+        knowledgebase_ids=knowledgebase_ids,
         limit=memory_limit_number or 9,
         include_preference=include_preference,
         preference_limit=preference_limit_number or 9,

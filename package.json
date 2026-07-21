@@ -1,6 +1,6 @@
 {
   "name": "@memtensor/memos-cloud-cli",
-  "version": "1.0.5",
+  "version": "0.1.0-beta.13",
   "description": "MemOS CLI - Universal memory interface for AI agents",
   "license": "UNLICENSED",
   "bin": {
