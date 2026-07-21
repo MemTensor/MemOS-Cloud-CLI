@@ -31,7 +31,7 @@ Common flags:
 - `--include-preference`
 - `--include-tool-memory`
 - `--include-skill-memory`
-- `--knowledgebase-ids` JSON array string, such as `'["kb_123","kb_456"]'`
+- `--knowledgebase-ids` JSON array string, such as `'["base123","base456"]'`
 - `--memory-limit-number`
 - `--preference-limit-number`
 - `--tool-memory-limit-number`
