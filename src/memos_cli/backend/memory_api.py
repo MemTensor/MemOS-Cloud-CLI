@@ -113,19 +113,7 @@ class MemoryAPI:
             if value is not None:
                 messages_payload[field] = value
 
-        last_error: Exception | None = None
-        attempts: list[tuple[list[str], dict[str, Any]]] = [
-            (["/extract/memory", "/extract_memory"], messages_payload),
-        ]
-        for paths, payload in attempts:
-            try:
-                return self.transport.request_first_json("POST", paths, json_body=payload)
-            except Exception as exc:
-                last_error = exc
-
-        if last_error is not None:
-            raise last_error
-        raise APIError("Failed to extract memory")
+        return self.transport.request_json("POST", "/extract/memory", json_body=messages_payload)
 
     def rerank_documents(self, query: str, documents: list[str], **kwargs: Any) -> dict[str, Any]:
         """Rerank candidate documents for a query."""
@@ -174,9 +162,7 @@ class MemoryAPI:
         if kwargs.get("relativity") is not None:
             payload["relativity"] = kwargs["relativity"]
 
-        data = self.transport.request_first_json(
-            "POST", ["/search/memory", "/v1/memories/search/"], json_body=payload
-        )
+        data = self.transport.request_json("POST", "/search/memory", json_body=payload)
         return data
 
     def get_memories(self, **kwargs: Any) -> dict[str, Any]:
