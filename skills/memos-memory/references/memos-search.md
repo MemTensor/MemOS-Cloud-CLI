@@ -17,7 +17,9 @@ Never do:
 - skip identity fields when user or conversation scope matters;
 - use `search` when you already have the exact target records you need.
 
-Command:
+Example Command:
+
+Do not reuse example parameter values as real parameters. Resolve the query, user id, and knowledge base ids from the current configuration or user-provided context.
 
 ```bash
 memos search "<query>"
@@ -29,6 +31,7 @@ Common flags:
 - `--include-preference`
 - `--include-tool-memory`
 - `--include-skill-memory`
+- `--knowledgebase-ids` JSON array string, such as `'["base123","base456"]'`
 - `--memory-limit-number`
 - `--preference-limit-number`
 - `--tool-memory-limit-number`
