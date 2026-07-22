@@ -31,6 +31,15 @@ find_base_python() {
   return 1
 }
 
+if [[ -x "${BUILD_PYTHON}" ]] && ! "${BUILD_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null; then
+  echo "Existing build venv Python is unusable or does not satisfy >= 3.10; recreating..." >&2
+  if [[ -z "${BUILD_VENV}" || "${BUILD_VENV}" == "/" ]]; then
+    echo "Refusing to remove unsafe build venv path: ${BUILD_VENV:-<empty>}" >&2
+    exit 1
+  fi
+  rm -rf "${BUILD_VENV}"
+fi
+
 if [[ ! -x "${BUILD_PYTHON}" ]]; then
   BASE_PYTHON="$(find_base_python)"
   "${BASE_PYTHON}" -m venv "${BUILD_VENV}"
