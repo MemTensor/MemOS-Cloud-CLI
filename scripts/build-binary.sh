@@ -32,7 +32,7 @@ find_base_python() {
 }
 
 if [[ -x "${BUILD_PYTHON}" ]] && ! "${BUILD_PYTHON}" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)' >/dev/null 2>&1; then
-  echo "Existing build venv Python does not satisfy >= 3.10; recreating..." >&2
+  echo "Existing build venv Python is unusable or does not satisfy >= 3.10; recreating..." >&2
   rm -rf "${BUILD_VENV}"
 fi
 
