@@ -46,30 +46,67 @@ function requiredEnv(name) {
 
 export function cleanVersion(raw) {
   const value = String(raw || "").trim().replace(/^v/, "");
-  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)) {
+  if (
+    !/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+      value,
+    )
+  ) {
     fail(`Invalid release version: ${raw || "(empty)"}`);
   }
   return value;
 }
 
-function semver(raw) {
-  const match = String(raw)
+export function parseSemver(raw) {
+  const match = String(raw || "")
     .replace(/^v/, "")
-    .match(/^(\d+)\.(\d+)\.(\d+)(?:[-+]([\w.-]+))?$/);
-  return match ? [+match[1], +match[2], +match[3], match[4] || ""] : null;
+    .match(
+      /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/,
+    );
+  if (!match) return null;
+  return {
+    major: Number(match[1]),
+    minor: Number(match[2]),
+    patch: Number(match[3]),
+    prerelease: match[4] || "",
+  };
 }
 
-function compare(a, b) {
-  const left = semver(a);
-  const right = semver(b);
-  if (!left || !right) return String(a).localeCompare(String(b));
-  for (let index = 0; index < 3; index += 1) {
-    if (left[index] !== right[index]) return left[index] - right[index];
+function comparePrereleaseIdentifiers(left, right) {
+  const leftNumeric = /^(0|[1-9]\d*)$/.test(left);
+  const rightNumeric = /^(0|[1-9]\d*)$/.test(right);
+  if (leftNumeric && rightNumeric) return Number(left) - Number(right);
+  if (leftNumeric) return -1;
+  if (rightNumeric) return 1;
+  return left < right ? -1 : left > right ? 1 : 0;
+}
+
+function comparePrerelease(left, right) {
+  if (left === right) return 0;
+  if (!left) return 1;
+  if (!right) return -1;
+
+  const leftParts = left.split(".");
+  const rightParts = right.split(".");
+  const length = Math.max(leftParts.length, rightParts.length);
+  for (let index = 0; index < length; index += 1) {
+    const leftPart = leftParts[index];
+    const rightPart = rightParts[index];
+    if (leftPart === undefined) return -1;
+    if (rightPart === undefined) return 1;
+    const order = comparePrereleaseIdentifiers(leftPart, rightPart);
+    if (order !== 0) return order;
   }
-  if (left[3] === right[3]) return 0;
-  if (!left[3]) return 1;
-  if (!right[3]) return -1;
-  return left[3].localeCompare(right[3]);
+  return 0;
+}
+
+export function compareSemver(a, b) {
+  const left = parseSemver(a);
+  const right = parseSemver(b);
+  if (!left || !right) return String(a).localeCompare(String(b));
+  for (const key of ["major", "minor", "patch"]) {
+    if (left[key] !== right[key]) return left[key] - right[key];
+  }
+  return comparePrerelease(left.prerelease, right.prerelease);
 }
 
 export function resolvePreviousRef(targetVersion, currentTag, explicitRef = "") {
@@ -88,8 +125,8 @@ export function resolvePreviousRef(targetVersion, currentTag, explicitRef = "") 
   const tag = git(["tag", "--list", "v*"])
     .split("\n")
     .filter(Boolean)
-    .filter((item) => item !== currentTag && semver(item) && compare(item, targetVersion) < 0)
-    .sort((a, b) => compare(b, a))[0];
+    .filter((item) => item !== currentTag && parseSemver(item) && compareSemver(item, targetVersion) < 0)
+    .sort((a, b) => compareSemver(b, a))[0];
   if (!tag) {
     fail("No real previous CLI tag exists. Backfill a baseline tag first, or provide RELEASE_PREVIOUS_REF only from a migration-only caller.");
   }
