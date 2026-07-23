@@ -1,0 +1,536 @@
+#!/usr/bin/env node
+import { execFileSync } from "node:child_process";
+import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { tmpdir } from "node:os";
+import { pathToFileURL } from "node:url";
+
+export const PRODUCT_ID = "memos-cloud-cli";
+export const PRODUCT_TITLE = { zh: "MemOS CLI", en: "MemOS CLI" };
+
+const REPOSITORY = "MemTensor/MemOS-Cloud-CLI";
+const RELEASE_NOTES_MARKER = "doc-agent-release-notes-json";
+const RELEASE_CATEGORY_ORDER = ["Added", "Improved", "Fixed"];
+const RELEASE_ASSET_TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "windows-x64"];
+
+function fail(message) {
+  throw new Error(String(message));
+}
+
+function warn(message) {
+  console.error(`::warning::${message}`);
+}
+
+function git(args, options = {}) {
+  return execFileSync("git", args, {
+    cwd: process.cwd(),
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"],
+    ...options,
+  }).trim();
+}
+
+function gitText(args) {
+  try {
+    return git(args);
+  } catch {
+    return "";
+  }
+}
+
+function requiredEnv(name) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) fail(`${name} is required.`);
+  return value;
+}
+
+export function cleanVersion(raw) {
+  const value = String(raw || "").trim().replace(/^v/, "");
+  if (!/^\d+\.\d+\.\d+(?:-[0-9A-Za-z.-]+)?$/.test(value)) {
+    fail(`Invalid release version: ${raw || "(empty)"}`);
+  }
+  return value;
+}
+
+function semver(raw) {
+  const match = String(raw)
+    .replace(/^v/, "")
+    .match(/^(\d+)\.(\d+)\.(\d+)(?:[-+]([\w.-]+))?$/);
+  return match ? [+match[1], +match[2], +match[3], match[4] || ""] : null;
+}
+
+function compare(a, b) {
+  const left = semver(a);
+  const right = semver(b);
+  if (!left || !right) return String(a).localeCompare(String(b));
+  for (let index = 0; index < 3; index += 1) {
+    if (left[index] !== right[index]) return left[index] - right[index];
+  }
+  if (left[3] === right[3]) return 0;
+  if (!left[3]) return 1;
+  if (!right[3]) return -1;
+  return left[3].localeCompare(right[3]);
+}
+
+export function resolvePreviousRef(targetVersion, currentTag, explicitRef = "") {
+  const ref = String(explicitRef || "").trim();
+  if (ref) {
+    git(["rev-parse", "--verify", `${ref}^{commit}`]);
+    return ref;
+  }
+
+  try {
+    git(["fetch", "--tags", "--force", "origin"], { stdio: ["ignore", "ignore", "ignore"] });
+  } catch {
+    warn("Failed to fetch tags; using local tags.");
+  }
+
+  const tag = git(["tag", "--list", "v*"])
+    .split("\n")
+    .filter(Boolean)
+    .filter((item) => item !== currentTag && semver(item) && compare(item, targetVersion) < 0)
+    .sort((a, b) => compare(b, a))[0];
+  if (!tag) {
+    fail("No real previous CLI tag exists. Backfill a baseline tag first, or provide RELEASE_PREVIOUS_REF only from a migration-only caller.");
+  }
+  return tag;
+}
+
+function readJsonFile(file) {
+  try {
+    return JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    return {};
+  }
+}
+
+function gitShowJson(ref, file) {
+  try {
+    return JSON.parse(git(["show", `${ref}:${file}`]));
+  } catch {
+    return {};
+  }
+}
+
+function tagInfo(ref, label = ref) {
+  const text = git(["show", "--no-patch", "--format=%H%n%ci%n%s", `${ref}^{commit}`]);
+  const [sha = "", date = "", subject = ""] = text.split("\n");
+  return { tag: label, ref, sha, date, subject };
+}
+
+function commits(range) {
+  return git(["log", "--format=%H%x09%h%x09%s", "--no-merges", range])
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const [sha = "", short_sha = "", subject = ""] = line.split("\t");
+      return { sha, short_sha, subject };
+    });
+}
+
+function files(range) {
+  return git(["diff", "--name-status", range])
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const parts = line.split("\t");
+      return { status: parts[0], path: parts.at(-1), ...(parts.length === 3 ? { old_path: parts[1] } : {}) };
+    });
+}
+
+function versionFromToml(text) {
+  return String(text || "").match(/version\s*=\s*"([^"]+)"/)?.[1] || "";
+}
+
+function versionFromInit(text) {
+  return String(text || "").match(/__version__\s*=\s*"([^"]+)"/)?.[1] || "";
+}
+
+function versionFileChanges(previousRef) {
+  const previousPackage = gitShowJson(previousRef, "package.json");
+  const currentPackage = readJsonFile("package.json");
+  const previousPyproject = versionFromToml(gitText(["show", `${previousRef}:pyproject.toml`]));
+  const currentPyproject = versionFromToml(readFileSync("pyproject.toml", "utf8"));
+  const previousInit = versionFromInit(gitText(["show", `${previousRef}:src/memos_cli/__init__.py`]));
+  const currentInit = versionFromInit(readFileSync("src/memos_cli/__init__.py", "utf8"));
+  return [
+    { file: "package.json", before: previousPackage.version || "", after: currentPackage.version || "" },
+    { file: "pyproject.toml", before: previousPyproject, after: currentPyproject },
+    { file: "src/memos_cli/__init__.py", before: previousInit, after: currentInit },
+  ].filter((item) => item.before !== item.after);
+}
+
+function releaseAssetContractForEvidence() {
+  const contract = readJsonFile("release-assets.json");
+  return {
+    schema: contract.schema || 1,
+    targets: Array.isArray(contract.targets) ? contract.targets : RELEASE_ASSET_TARGETS,
+    public_base_url_configured: Boolean(contract.public_base_url),
+  };
+}
+
+function refsForGuidance(commit) {
+  const refs = [];
+  if (commit.short_sha) refs.push(commit.short_sha);
+  for (const match of String(commit.subject || "").matchAll(/#(\d+)/g)) {
+    const ref = `#${match[1]}`;
+    if (!refs.includes(ref)) refs.push(ref);
+  }
+  return refs;
+}
+
+function categoryHintForSubject(subject) {
+  const value = String(subject || "");
+  const lower = value.toLowerCase();
+  if (lower.startsWith("release:") || /^chore(\([^)]+\))?:\s*(release|version|bump)\b/i.test(value) || /^test(\([^)]+\))?:/i.test(value)) {
+    return null;
+  }
+  if (/^(feat|feature|add)(\([^)]+\))?:|^add\s+/i.test(value)) {
+    return { category: "Added", reason: "new user-facing CLI capability or command behavior" };
+  }
+  if (/^(perf|performance|refactor|improve|enhance)(\([^)]+\))?:/i.test(value) || /build|pack|publish|postinstall|pyinstaller|binary|installer|oss|sync-version/i.test(value)) {
+    return { category: "Improved", reason: "CLI packaging, installer, compatibility, or reliability improvement" };
+  }
+  if (/^(fix|hotfix|bugfix)(\([^)]+\))?:|^fix\s+#\d+/i.test(value)) {
+    return { category: "Fixed", reason: "specific CLI bug fix" };
+  }
+  return null;
+}
+
+function releaseNoteGuidanceForCommits(commitList) {
+  return {
+    category_policy: {
+      Added: "Use for newly exposed CLI commands, options, workflows, or installation capabilities.",
+      Improved: "Use for packaging, binary distribution, compatibility, docs, postinstall, OSS, or release reliability improvements.",
+      Fixed: "Use for concrete broken CLI behavior, installer failures, API path regressions, encoding issues, or binary launch failures.",
+    },
+    source_ref_category_hints: commitList
+      .map((commit) => {
+        const hint = categoryHintForSubject(commit.subject);
+        const source_refs = refsForGuidance(commit);
+        return hint && source_refs.length ? { ...hint, source_refs, subject: commit.subject } : null;
+      })
+      .filter(Boolean),
+  };
+}
+
+export function collectEvidence({ targetVersion, currentTag, previousRef }) {
+  const range = `${previousRef}..HEAD`;
+  const commitList = commits(range);
+  const changed = files(range);
+  const repo = process.env.GITHUB_REPOSITORY || REPOSITORY;
+  const numbers = new Set(commitList.flatMap((item) => [...item.subject.matchAll(/#(\d+)/g)].map((match) => match[1])));
+  const previousPackage = gitShowJson(previousRef, "package.json");
+  const currentPackage = readJsonFile("package.json");
+  const releaseAssetContract = releaseAssetContractForEvidence();
+
+  return {
+    product_id: PRODUCT_ID,
+    product_title: PRODUCT_TITLE,
+    release_note_guidance: releaseNoteGuidanceForCommits(commitList),
+    repo,
+    previous_tag: previousRef,
+    current_tag: currentTag,
+    current_ref: "HEAD",
+    diff_range: range,
+    target_version: `v${cleanVersion(targetVersion)}`,
+    git_ref: git(["rev-parse", "--short=12", "HEAD"]),
+    previous: tagInfo(previousRef),
+    current: tagInfo("HEAD", currentTag),
+    commits: commitList,
+    pull_requests: [...numbers].map((number) => ({ number, url: `https://github.com/${repo}/pull/${number}` })),
+    changed_files: changed,
+    diff_stat: git(["diff", "--stat", range]),
+    important_diff: {
+      "cli/**": git([
+        "diff",
+        "--unified=2",
+        range,
+        "--",
+        "src",
+        "scripts",
+        "package.json",
+        "pyproject.toml",
+        "README.md",
+        "README-zh.md",
+        "npm/README.md",
+        "skills/memos-memory",
+      ]).slice(0, 24000),
+    },
+    package_changes: ["name", "version"]
+      .filter((key) => previousPackage[key] !== currentPackage[key])
+      .map((key) => ({ field: key, before: previousPackage[key], after: currentPackage[key] })),
+    version_file_changes: versionFileChanges(previousRef),
+    release_asset_contract: releaseAssetContract,
+    postinstall_contract: {
+      asset_pattern: "memos-<version>-<target>.tar.gz",
+      supported_targets: releaseAssetContract.targets,
+      skip_download_env: "MEMOS_INSTALL_SKIP_DOWNLOAD",
+      override_url_env: "MEMOS_BINARY_URL",
+    },
+    test_changes: changed.filter((item) => item.path.startsWith("tests/") || item.path.endsWith(".test.js") || item.path.endsWith(".test.mjs")),
+    docs_changes: changed.filter((item) => /^README|^npm\/README|^docs\/|^skills\/memos-memory\//i.test(item.path)),
+  };
+}
+
+export function evidenceForInspection(evidence) {
+  const { important_diff: _importantDiff, release_note_guidance: guidance = {}, ...publicEvidence } = evidence || {};
+  return {
+    ...publicEvidence,
+    release_note_guidance: {
+      source_ref_category_hints: Array.isArray(guidance.source_ref_category_hints) ? guidance.source_ref_category_hints : [],
+    },
+    redactions: {
+      important_diff: "omitted from public workflow artifacts; sent only to the configured draft service",
+      prompt_guidance: "omitted from public workflow artifacts",
+    },
+  };
+}
+
+export function draftForInspection(draft) {
+  return {
+    ok: Boolean(draft?.ok),
+    needs_review: Boolean(draft?.needs_review),
+    confidence: draft?.confidence || "",
+    release_items: Array.isArray(draft?.release_items) ? draft.release_items : [],
+    coverage: draft?.coverage || {},
+    warnings: Array.isArray(draft?.warnings) ? draft.warnings : [],
+    language_issues: Array.isArray(draft?.language_issues) ? draft.language_issues : [],
+    postprocess: draft?.postprocess || {},
+    validation_report: draft?.validation_report || {},
+    validation_attempt_count: Number(draft?.validation_attempt_count || 0),
+    repair_attempt_count: Number(draft?.repair_attempt_count || 0),
+    repair_attempts: Array.isArray(draft?.repair_attempts) ? draft.repair_attempts : [],
+    redactions: {
+      server_debug_fields: "omitted from public workflow artifacts",
+      model_and_prompt_details: "omitted from public workflow artifacts",
+    },
+  };
+}
+
+function appendOutput(name, value) {
+  if (!process.env.GITHUB_OUTPUT) return;
+  writeFileSync(process.env.GITHUB_OUTPUT, `${name}<<__DOC_AGENT_EOF__\n${value}\n__DOC_AGENT_EOF__\n`, {
+    flag: "a",
+  });
+}
+
+export function ensureSourceHint(notes) {
+  const hint = `<!-- doc-agent: source-id=${PRODUCT_ID} -->`;
+  return notes.includes("doc-agent: source-id=") ? `${notes.trim()}\n` : `${notes.trim()}\n\n${hint}\n`;
+}
+
+function normalizeReleaseItem(raw) {
+  const category = RELEASE_CATEGORY_ORDER.includes(String(raw?.category || "").trim()) ? String(raw.category).trim() : "";
+  const text_cn = String(raw?.text_cn || "").trim().replace(/^-+\s*/, "");
+  const text_en = String(raw?.text_en || "").trim().replace(/^-+\s*/, "");
+  const source_refs = Array.isArray(raw?.source_refs) ? raw.source_refs.map((ref) => String(ref).trim()).filter(Boolean) : [];
+  return category && text_cn && text_en && source_refs.length ? { category, text_cn, text_en, source_refs } : null;
+}
+
+function releaseNotesPayloadFromDraft(draft) {
+  const rawItems = Array.isArray(draft?.release_items) ? draft.release_items : Array.isArray(draft?.items) ? draft.items : [];
+  const items = rawItems.map(normalizeReleaseItem).filter(Boolean);
+  return { items, coverage: draft?.coverage || { needs_review: Boolean(draft?.needs_review) } };
+}
+
+function ensureMachineReadablePayload(notes, draft) {
+  if (notes.includes(RELEASE_NOTES_MARKER)) return notes;
+  const payload = releaseNotesPayloadFromDraft(draft);
+  if (!payload.items.length) {
+    fail("Doc Agent draft did not include release_items/source_refs for the hidden docs payload.");
+  }
+  return `${notes.trim()}\n\n<!-- ${RELEASE_NOTES_MARKER}\n${JSON.stringify(payload)}\n-->\n`;
+}
+
+export function validateManualNotes(notes) {
+  const text = String(notes || "").trim();
+  if (!/^## Changelog\s*$/m.test(text)) fail("Manual release notes require a ## Changelog heading.");
+  const match = text.match(new RegExp(`<!--\\s*${RELEASE_NOTES_MARKER}\\s*\\n([\\s\\S]*?)\\n-->`));
+  if (!match) fail("Manual release notes require the doc-agent-release-notes-json evidence block.");
+  let payload;
+  try {
+    payload = JSON.parse(match[1]);
+  } catch {
+    fail("Manual release-note evidence JSON is invalid.");
+  }
+  if (!payload?.items?.length || payload?.coverage?.needs_review !== false || payload.items.some((item) => !item.text_cn || !item.text_en || !item.source_refs?.length)) {
+    fail("Manual release-note evidence must have bilingual items, source_refs, and passed coverage.");
+  }
+  return text;
+}
+
+function cleanError(value) {
+  return String(value || "")
+    .replace(/Bearer\s+\S+/gi, "Bearer ***")
+    .replace(/sk-[\w-]+/g, "sk-***")
+    .replace(/\s+/g, " ")
+    .slice(0, 600);
+}
+
+function retryable(status) {
+  return [408, 425, 429].includes(status) || status >= 500;
+}
+
+async function reportFailure(evidence, attempts, finalError, fetchImpl, phase = "release-notes") {
+  if (attempts.length < 3 || !process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN) return;
+  const failureUrl = String(process.env.DOC_AGENT_RELEASE_FAILURE_URL || "").trim();
+  if (!failureUrl) {
+    warn("DOC_AGENT_RELEASE_FAILURE_URL is not configured; skipping exhausted-retry report.");
+    return;
+  }
+  const response = await fetchImpl(failureUrl, {
+    method: "POST",
+    headers: {
+      "content-type": "application/json",
+      authorization: `Bearer ${process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN}`,
+    },
+    body: JSON.stringify({
+      product_id: PRODUCT_ID,
+      repository: evidence.repo,
+      version: evidence.target_version,
+      phase,
+      run_id: process.env.GITHUB_RUN_ID || `${evidence.current_tag}-cli`,
+      run_url: process.env.GITHUB_RUN_ID ? `https://github.com/${evidence.repo}/actions/runs/${process.env.GITHUB_RUN_ID}` : "",
+      attempts: attempts.slice(0, 3).map((item, index) => ({
+        attempt: index + 1,
+        error_code: item.error_code || "DRAFT_FAILED",
+        message: cleanError(item.message || item.error),
+        retryable: Boolean(item.retryable),
+      })),
+      final_error: cleanError(finalError),
+    }),
+  });
+  if (!response.ok) throw new Error(`Failure-report endpoint returned HTTP ${response.status}`);
+}
+
+export async function reportExternalFailureFromEnv({ fetchImpl = fetch } = {}) {
+  const phase = String(process.env.RELEASE_FAILURE_PHASE || "").trim();
+  const attemptDir = String(process.env.RELEASE_FAILURE_ATTEMPT_DIR || "").trim();
+  if (!phase || !attemptDir) fail("RELEASE_FAILURE_PHASE and RELEASE_FAILURE_ATTEMPT_DIR are required.");
+  const attempts = [1, 2, 3].map((attempt) => {
+    let message = "attempt log is unavailable";
+    try {
+      message = readFileSync(join(attemptDir, `${attempt}.log`), "utf8");
+    } catch {
+      // The failure report should not replace the original publish failure.
+    }
+    return { error_code: phase.toUpperCase().replace(/[^A-Z0-9]+/g, "_"), message: cleanError(message), retryable: true };
+  });
+  const targetVersion = cleanVersion(process.env.RELEASE_VERSION);
+  return reportFailure(
+    {
+      repo: process.env.GITHUB_REPOSITORY || REPOSITORY,
+      target_version: `v${targetVersion}`,
+      current_tag: process.env.RELEASE_TAG || `v${targetVersion}`,
+    },
+    attempts,
+    attempts[2].message,
+    fetchImpl,
+    phase,
+  );
+}
+
+export async function requestDraft(evidence, { fetchImpl = fetch, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {}) {
+  const token = requiredEnv("DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN");
+  const draftUrl = requiredEnv("DOC_AGENT_RELEASE_NOTES_DRAFT_URL");
+  const attempts = [];
+  for (let attempt = 1; attempt <= 3; attempt += 1) {
+    try {
+      const response = await fetchImpl(draftUrl, {
+        method: "POST",
+        headers: { "content-type": "application/json", authorization: `Bearer ${token}` },
+        body: JSON.stringify({
+          ...evidence,
+          workflow_retry_context: { attempt, previous_errors: attempts.map((item) => item.message) },
+        }),
+      });
+      const text = await response.text();
+      let payload;
+      try {
+        payload = text ? JSON.parse(text) : {};
+      } catch {
+        throw Object.assign(new Error(`non-JSON response: HTTP ${response.status}`), {
+          retryable: retryable(response.status),
+          code: `HTTP_${response.status}`,
+        });
+      }
+      if (!response.ok) {
+        throw Object.assign(new Error(`HTTP ${response.status} ${text.slice(0, 400)}`), {
+          retryable: retryable(response.status),
+          code: `HTTP_${response.status}`,
+        });
+      }
+      if (!payload.ok || payload.needs_review || payload.coverage?.needs_review !== false || !String(payload.release_notes_markdown || "").trim()) {
+        const message = `Doc Agent draft requires review: ${JSON.stringify(payload.coverage || {})} ${(payload.warnings || []).join("; ")}`;
+        if (payload.attempts?.length >= 3) await reportFailure(evidence, payload.attempts, message, fetchImpl);
+        fail(message);
+      }
+      return payload;
+    } catch (error) {
+      const item = {
+        error_code: error?.code || "DRAFT_REQUEST",
+        message: cleanError(error?.message || error),
+        retryable: Boolean(error?.retryable),
+      };
+      attempts.push(item);
+      if (!item.retryable || attempt === 3) {
+        await reportFailure(evidence, attempts, item.message, fetchImpl);
+        fail(`Doc Agent draft failed on attempt ${attempt}: ${item.message}`);
+      }
+      warn(`Draft attempt ${attempt} failed; retrying: ${item.message}`);
+      await sleep(250 * 2 ** (attempt - 1));
+    }
+  }
+}
+
+export async function main() {
+  const targetVersion = cleanVersion(process.env.RELEASE_VERSION);
+  const currentTag = process.env.RELEASE_TAG || `v${targetVersion}`;
+  const notesPath = process.env.RELEASE_NOTES_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-release-notes.md`);
+  const evidencePath = process.env.RELEASE_EVIDENCE_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-evidence.json`);
+  const draftPath = process.env.RELEASE_DRAFT_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-release-notes-draft.json`);
+  mkdirSync(dirname(notesPath), { recursive: true });
+  mkdirSync(dirname(evidencePath), { recursive: true });
+  mkdirSync(dirname(draftPath), { recursive: true });
+
+  const manual = String(process.env.MANUAL_RELEASE_NOTES || "").trim();
+  if (manual) {
+    writeFileSync(notesPath, ensureSourceHint(validateManualNotes(manual)), "utf8");
+    appendOutput("release_notes_file", notesPath);
+    appendOutput("draft_used", "false");
+    return;
+  }
+
+  const previousRef = resolvePreviousRef(targetVersion, currentTag, process.env.RELEASE_PREVIOUS_REF || "");
+  const evidence = collectEvidence({ targetVersion, currentTag, previousRef });
+  const draft = await requestDraft(evidence);
+  writeFileSync(evidencePath, JSON.stringify(evidenceForInspection(evidence), null, 2), "utf8");
+  writeFileSync(draftPath, JSON.stringify(draftForInspection(draft), null, 2), "utf8");
+  writeFileSync(notesPath, ensureSourceHint(ensureMachineReadablePayload(draft.release_notes_markdown, draft)), "utf8");
+
+  for (const [key, value] of Object.entries({
+    release_notes_file: notesPath,
+    evidence_file: evidencePath,
+    draft_file: draftPath,
+    draft_used: "true",
+    previous_tag: previousRef,
+    current_tag: currentTag,
+    current_ref: "HEAD",
+    draft_confidence: String(draft.confidence || ""),
+    missing_required_count: String(draft.coverage?.missing_required_count ?? ""),
+    validation_attempt_count: String(draft.validation_attempt_count ?? ""),
+    repair_attempt_count: String(draft.repair_attempt_count ?? ""),
+  })) {
+    appendOutput(key, value);
+  }
+}
+
+const isDirect = process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href;
+if (isDirect) {
+  const run = process.env.RELEASE_FAILURE_PHASE ? reportExternalFailureFromEnv : main;
+  run().catch((error) => {
+    console.error(`::error::${cleanError(error?.message || error)}`);
+    process.exitCode = 1;
+  });
+}

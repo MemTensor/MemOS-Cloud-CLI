@@ -7,16 +7,20 @@
     "memos": "bin/memos.js"
   },
   "files": [
-    "bin",
-    "scripts"
+    "bin/memos.js",
+    "scripts/postinstall.js",
+    "release-assets.json"
   ],
   "engines": {
     "node": ">=12"
   },
   "scripts": {
+    "test": "node --test scripts/*.test.js",
+    "sync-version": "node scripts/sync-version.js",
+    "check-version": "node scripts/sync-version.js --check",
     "prepublishOnly": "node scripts/prepublish-check.js",
-    "publish:beta": "npm publish --tag beta",
-    "publish:latest": "npm publish --tag latest",
+    "publish:beta": "npm publish --access public --tag beta",
+    "publish:latest": "npm publish --access public --tag latest",
     "postinstall": "node scripts/postinstall.js"
   }
 }

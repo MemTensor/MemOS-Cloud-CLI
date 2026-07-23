@@ -1,101 +1,99 @@
-name: release
+name: MemOS CLI - Build & Publish
 
 on:
   workflow_dispatch:
     inputs:
       version:
-        description: "Release version, with or without the leading v (e.g. 1.0.5 or v1.0.5)"
+        description: "Release version, with or without leading v (for example 1.0.7)"
         required: true
+      tag:
+        description: "npm dist-tag (latest for production, beta/next/alpha for testing)"
+        required: true
+        default: "latest"
       git_ref:
-        description: "Git ref to release from. Leave blank to use the branch selected above."
+        description: "Git ref to build. Leave blank to use the selected branch."
         required: false
         default: ""
       release_notes:
-        description: "Markdown release notes for GitHub Release and docs changelog. Include a ## Changelog section."
+        description: "Optional evidence-backed Markdown. Leave blank to draft it from git evidence."
+        required: false
+        default: ""
+      dry_run:
+        description: "Build and validate all assets without OSS/npm/GitHub mutations."
         required: true
-  push:
-    tags:
-      - "v*"
+        type: boolean
+        default: true
+      publish_confirmation:
+        description: "Required only when dry_run=false. Must exactly equal: PUBLISH v<version>"
+        required: false
+        default: ""
+      recover_existing_npm_release:
+        description: "Explicitly allow reconstructing GitHub metadata for a version already on npm. Keep false for normal releases."
+        required: true
+        type: boolean
+        default: false
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to publish or dry-run (for example 1.0.7 or 1.0.7-beta.1)"
+        required: true
+        type: string
+      tag:
+        description: "npm dist-tag (latest for production, beta/next/alpha for testing)"
+        required: false
+        type: string
+        default: "latest"
+      git_ref:
+        description: "Git ref to build. Leave blank to use the caller ref."
+        required: false
+        type: string
+        default: ""
+      release_notes:
+        description: "Optional evidence-backed Markdown. Leave blank to draft it from git evidence."
+        required: false
+        type: string
+        default: ""
+      dry_run:
+        description: "Build and validate all assets without OSS/npm/GitHub mutations."
+        required: false
+        type: boolean
+        default: true
+      publish_confirmation:
+        description: "Required only when dry_run=false. Must exactly equal: PUBLISH v<version>"
+        required: false
+        type: string
+        default: ""
+      recover_existing_npm_release:
+        description: "Explicitly allow reconstructing GitHub metadata for a version already on npm. Keep false for normal releases."
+        required: false
+        type: boolean
+        default: false
+
+concurrency:
+  group: memos-cloud-cli-release
+  cancel-in-progress: false
 
 permissions:
   contents: write
+  pull-requests: write
 
 jobs:
-  release-metadata:
+  metadata:
     runs-on: ubuntu-22.04
     outputs:
+      version: ${{ steps.metadata.outputs.version }}
       tag_name: ${{ steps.metadata.outputs.tag_name }}
       release_title: ${{ steps.metadata.outputs.release_title }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.git_ref || github.ref }}
+          fetch-depth: 0
 
-      - name: Prepare release metadata
-        id: metadata
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          RELEASE_VERSION: ${{ inputs.version }}
-          RELEASE_NOTES: ${{ inputs.release_notes }}
-        run: |
-          set -euo pipefail
-
-          if [ "${EVENT_NAME}" = "workflow_dispatch" ]; then
-            if [ -z "${RELEASE_VERSION}" ]; then
-              echo "::error::version is required for manual release."
-              exit 1
-            fi
-            if [ -z "$(printf '%s' "${RELEASE_NOTES}" | tr -d '[:space:]')" ]; then
-              echo "::error::release_notes is required so Doc Agent can update docs."
-              exit 1
-            fi
-
-            normalized_version="${RELEASE_VERSION#v}"
-            tag_name="v${normalized_version}"
-            printf '%s\n' "${RELEASE_NOTES}" > release-notes.md
-
-            git config user.name "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            if git ls-remote --exit-code --tags origin "refs/tags/${tag_name}" >/dev/null 2>&1; then
-              echo "Tag ${tag_name} already exists on origin; leaving it unchanged."
-            else
-              git tag "${tag_name}"
-              git push origin "refs/tags/${tag_name}"
-            fi
-          else
-            tag_name="${GITHUB_REF_NAME}"
-            printf '' > release-notes.md
-          fi
-
-          echo "tag_name=${tag_name}" >> "${GITHUB_OUTPUT}"
-          echo "release_title=MemOS CLI ${tag_name}" >> "${GITHUB_OUTPUT}"
-
-      - name: Upload release notes
-        uses: actions/upload-artifact@v4
+      - uses: actions/setup-node@v4
         with:
-          name: release-notes
-          path: release-notes.md
-
-  build:
-    needs: release-metadata
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-22.04
-            build_script: ./scripts/build-binary.sh
-            upload_name: linux-x64
-          - os: windows-2022
-            build_script: ./scripts/build-binary.ps1
-            upload_name: windows-x64
-
-    runs-on: ${{ matrix.os }}
-
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: ${{ inputs.git_ref || github.ref }}
+          node-version: 22
+          registry-url: https://registry.npmjs.org
 
       - uses: actions/setup-python@v5
         with:
@@ -104,39 +102,431 @@ jobs:
       - name: Upgrade pip
         run: python -m pip install --upgrade pip
 
-      - name: Build archive on Unix
-        if: runner.os != 'Windows'
-        run: bash ${{ matrix.build_script }}
+      - name: Validate release inputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION#v}"
+          if ! [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-+][0-9A-Za-z.-]+)?$ ]]; then
+            echo "::error::version must be a semver value like 1.0.7 or 1.0.7-beta.1."
+            exit 1
+          fi
+          if [ -z "${NPM_DIST_TAG//[[:space:]]/}" ]; then
+            echo "::error::tag is required."
+            exit 1
+          fi
+          if ! [[ "${NPM_DIST_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::tag must be a valid npm dist-tag."
+            exit 1
+          fi
+          node .github/scripts/validate-release-confirmation.mjs
 
-      - name: Build archive on Windows
-        if: runner.os == 'Windows'
-        run: pwsh -File ${{ matrix.build_script }}
+      - name: Normalize metadata and synchronize every version source
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          version="${RELEASE_VERSION#v}"
+          node scripts/sync-version.js "${version}"
+          node scripts/sync-version.js "${version}" --check
+          echo "version=${version}" >> "${GITHUB_OUTPUT}"
+          echo "tag_name=v${version}" >> "${GITHUB_OUTPUT}"
+          echo "release_title=MemOS CLI v${version}" >> "${GITHUB_OUTPUT}"
 
-      - name: Upload build artifact
+      - name: Run release contract and Python tests
+        env:
+          MEMOS_INSTALL_SKIP_DOWNLOAD: "1"
+        run: |
+          npm install --ignore-scripts
+          npm test
+          node --test .github/scripts/*.test.mjs
+          python -m pip install -e .
+          python -m unittest discover -s tests -p 'test_*.py'
+          npm pack --dry-run --json > "${RUNNER_TEMP}/memos-cloud-cli-pack.json"
+
+      - name: Draft evidence-backed GitHub Release notes
+        id: release_notes
+        env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag_name }}
+          RELEASE_PREVIOUS_REF: ${{ vars.MEMOS_CLOUD_CLI_RELEASE_BASELINE_REF }}
+          MANUAL_RELEASE_NOTES: ${{ inputs.release_notes }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_URL: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_URL }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+        run: node .github/scripts/draft-cli-release-notes.mjs
+
+      - name: Prepare release metadata artifact
+        shell: bash
+        env:
+          DRY_RUN: ${{ inputs.dry_run }}
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_NOTES_FILE: ${{ steps.release_notes.outputs.release_notes_file }}
+          EVIDENCE_FILE: ${{ steps.release_notes.outputs.evidence_file }}
+          DRAFT_FILE: ${{ steps.release_notes.outputs.draft_file }}
+          DRAFT_USED: ${{ steps.release_notes.outputs.draft_used }}
+          PREVIOUS_TAG: ${{ steps.release_notes.outputs.previous_tag }}
+          CURRENT_TAG: ${{ steps.release_notes.outputs.current_tag }}
+          CURRENT_REF: ${{ steps.release_notes.outputs.current_ref }}
+          DRAFT_CONFIDENCE: ${{ steps.release_notes.outputs.draft_confidence }}
+          MISSING_REQUIRED_COUNT: ${{ steps.release_notes.outputs.missing_required_count }}
+          VALIDATION_ATTEMPT_COUNT: ${{ steps.release_notes.outputs.validation_attempt_count }}
+          REPAIR_ATTEMPT_COUNT: ${{ steps.release_notes.outputs.repair_attempt_count }}
+        run: |
+          set -euo pipefail
+          metadata_dir="${RUNNER_TEMP}/memos-cloud-cli-release-metadata"
+          mkdir -p "${metadata_dir}"
+
+          if [ -z "${RELEASE_NOTES_FILE}" ] || [ ! -s "${RELEASE_NOTES_FILE}" ]; then
+            echo "::error::Release notes file was not generated."
+            exit 1
+          fi
+
+          cp "${RELEASE_NOTES_FILE}" "${metadata_dir}/release-notes.md"
+          cp "${RUNNER_TEMP}/memos-cloud-cli-pack.json" "${metadata_dir}/npm-pack.json"
+          if [ -n "${EVIDENCE_FILE}" ] && [ -s "${EVIDENCE_FILE}" ]; then
+            cp "${EVIDENCE_FILE}" "${metadata_dir}/evidence.json"
+          fi
+          if [ "${DRAFT_USED:-}" = "true" ]; then
+            if [ -z "${DRAFT_FILE}" ] || [ ! -s "${DRAFT_FILE}" ]; then
+              echo "::error::Draft JSON file was not generated."
+              exit 1
+            fi
+            cp "${DRAFT_FILE}" "${metadata_dir}/release-notes-draft.json"
+          elif [ -n "${DRAFT_FILE}" ] && [ -s "${DRAFT_FILE}" ]; then
+            cp "${DRAFT_FILE}" "${metadata_dir}/release-notes-draft.json"
+          fi
+          cp package.json pyproject.toml src/memos_cli/__init__.py "${metadata_dir}/"
+
+          {
+            echo "# MemOS CLI release inspection"
+            echo
+            echo "- dry_run: ${DRY_RUN}"
+            echo "- version: ${RELEASE_VERSION}"
+            echo "- draft_used: ${DRAFT_USED:-unknown}"
+            echo "- previous_tag: ${PREVIOUS_TAG:-n/a}"
+            echo "- current_tag: ${CURRENT_TAG:-n/a}"
+            echo "- current_ref: ${CURRENT_REF:-n/a}"
+            echo "- draft_confidence: ${DRAFT_CONFIDENCE:-n/a}"
+            echo "- missing_required_count: ${MISSING_REQUIRED_COUNT:-n/a}"
+            echo "- validation_attempt_count: ${VALIDATION_ATTEMPT_COUNT:-n/a}"
+            echo "- repair_attempt_count: ${REPAIR_ATTEMPT_COUNT:-n/a}"
+            echo
+            echo "Files:"
+            echo
+            echo "- release-notes.md"
+            echo "- npm-pack.json"
+            echo "- package.json / pyproject.toml / src/memos_cli/__init__.py"
+            if [ -n "${EVIDENCE_FILE}" ] && [ -s "${EVIDENCE_FILE}" ]; then
+              echo "- evidence.json (redacted; no full diff or prompt guidance)"
+            fi
+            if [ -f "${metadata_dir}/release-notes-draft.json" ]; then
+              echo "- release-notes-draft.json"
+            fi
+          } > "${metadata_dir}/README.md"
+
+          {
+            echo "### MemOS CLI release notes"
+            echo
+            echo "- dry_run: \`${DRY_RUN}\`"
+            echo "- draft_used: \`${DRAFT_USED:-unknown}\`"
+            echo "- previous_tag: \`${PREVIOUS_TAG:-n/a}\`"
+            echo "- current_tag: \`${CURRENT_TAG:-n/a}\`"
+            echo "- current_ref: \`${CURRENT_REF:-n/a}\`"
+            echo "- draft_confidence: \`${DRAFT_CONFIDENCE:-n/a}\`"
+            echo "- missing_required_count: \`${MISSING_REQUIRED_COUNT:-n/a}\`"
+            echo "- validation_attempt_count: \`${VALIDATION_ATTEMPT_COUNT:-n/a}\`"
+            echo "- repair_attempt_count: \`${REPAIR_ATTEMPT_COUNT:-n/a}\`"
+            echo
+            echo "Download the workflow artifact \`memos-cloud-cli-release-inspection\` to review release-notes.md, release-notes-draft.json, redacted evidence.json, npm-pack.json, and release-assets-manifest.json."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-metadata
+          path: ${{ runner.temp }}/memos-cloud-cli-release-metadata
+          if-no-files-found: error
+
+  build:
+    needs: metadata
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            script: bash scripts/build-binary.sh
+          - os: macos-15-intel
+            target: darwin-x64
+            script: bash scripts/build-binary.sh
+          - os: ubuntu-22.04
+            target: linux-x64
+            script: bash scripts/build-binary.sh
+          - os: windows-2022
+            target: windows-x64
+            script: pwsh -File scripts/build-binary.ps1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Synchronize version
+        run: node scripts/sync-version.js "${{ needs.metadata.outputs.version }}"
+
+      - name: Build native archive
+        run: ${{ matrix.script }}
+
+      - name: Verify target archive name
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s "dist/memos-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/memos-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  assemble-and-publish:
+    needs: [metadata, build]
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: release-assets
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: release-metadata
+          path: release-metadata
+
+      - name: Validate the complete OSS/npm asset contract
+        run: |
+          node scripts/sync-version.js "${{ needs.metadata.outputs.version }}"
+          python scripts/upload_release_assets.py \
+            --version "${{ needs.metadata.outputs.version }}" \
+            --assets-dir release-assets \
+            --output release-assets-manifest.json \
+            --dry-run
+
+      - name: Upload release inspection artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.upload_name }}
-          path: dist/*.tar.gz
+          name: memos-cloud-cli-release-inspection
+          path: |
+            release-assets-manifest.json
+            release-metadata
+          if-no-files-found: error
 
-      - name: Download release notes
-        if: github.event_name == 'workflow_dispatch'
-        uses: actions/download-artifact@v4
-        with:
-          name: release-notes
-          path: release-notes
+      - name: Stop before external writes in dry run
+        if: ${{ inputs.dry_run == true }}
+        run: echo "::notice::dry_run=true; OSS, npm, tag, GitHub Release, and version PR were skipped."
 
-      - name: Upload release assets for manual release
-        if: github.event_name == 'workflow_dispatch'
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ needs.release-metadata.outputs.tag_name }}
-          name: ${{ needs.release-metadata.outputs.release_title }}
-          body_path: release-notes/release-notes.md
-          files: dist/*.tar.gz
+      - name: Refuse implicit recovery of an npm-only release
+        if: ${{ inputs.dry_run != true }}
+        env:
+          PACKAGE_NAME: "@memtensor/memos-cloud-cli"
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
+          RECOVER_EXISTING_NPM_RELEASE: ${{ inputs.recover_existing_npm_release }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+              echo "${PACKAGE_NAME}@${RELEASE_VERSION} and ${RELEASE_TAG} already exist; treating this as an idempotent rerun."
+            elif [ "${RECOVER_EXISTING_NPM_RELEASE}" != "true" ]; then
+              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} exists but ${RELEASE_TAG} does not. Refusing to invent missing release metadata without explicit recovery mode."
+              exit 1
+            fi
+          fi
 
-      - name: Upload release assets for tag release
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*.tar.gz
-          generate_release_notes: true
+      - name: Upload assets to OSS and verify each object
+        if: ${{ inputs.dry_run != true }}
+        env:
+          OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
+          OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
+          OSS_SESSION_TOKEN: ${{ secrets.OSS_SESSION_TOKEN }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+        run: |
+          python -m pip install 'oss2>=2.19,<3'
+          python scripts/upload_release_assets.py \
+            --version "${{ needs.metadata.outputs.version }}" \
+            --assets-dir release-assets \
+            --output release-assets-manifest.json
+
+      - name: Publish npm package with postcondition checks
+        if: ${{ inputs.dry_run != true }}
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          MEMOS_INSTALL_SKIP_DOWNLOAD: "1"
+          PACKAGE_NAME: "@memtensor/memos-cloud-cli"
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+          RECOVER_EXISTING_NPM_RELEASE: ${{ inputs.recover_existing_npm_release }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts
+          if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+              echo "${PACKAGE_NAME}@${RELEASE_VERSION} and ${RELEASE_TAG} already exist; publish is already complete."
+            elif [ "${RECOVER_EXISTING_NPM_RELEASE}" = "true" ]; then
+              echo "Recovery mode enabled; npm version exists, so publish is skipped."
+            else
+              echo "::error::Existing npm version requires explicit recovery mode."
+              exit 1
+            fi
+            exit 0
+          fi
+          attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-npm-publish-attempts"
+          mkdir -p "${attempt_dir}"
+          for attempt in 1 2 3; do
+            set +e
+            npm publish --access public --tag "${NPM_DIST_TAG}" >"${attempt_dir}/${attempt}.log" 2>&1
+            publish_status=$?
+            set -e
+            sed -n '1,160p' "${attempt_dir}/${attempt}.log"
+            if [ "${publish_status}" = 0 ]; then
+              break
+            fi
+            if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+              echo "Publish returned an error, but npm now contains the requested version."
+              break
+            fi
+            if [ "${attempt}" = 3 ]; then
+              RELEASE_FAILURE_PHASE=npm-publish \
+                RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                node .github/scripts/draft-cli-release-notes.mjs \
+                || echo "::warning::Failed to send the exhausted-retry notification."
+              echo "::error::npm publish failed after three attempts."
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
+          npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version
+
+      - name: Create immutable tag, GitHub Release, and version PR
+        if: ${{ inputs.dry_run != true }}
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+          RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
+          RELEASE_TITLE: ${{ needs.metadata.outputs.release_title }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ ! -s release-metadata/release-notes.md ]; then
+            echo "::error::Release notes file was not generated."
+            exit 1
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add package.json pyproject.toml src/memos_cli/__init__.py
+          created_release_commit=false
+          if ! git diff --staged --quiet; then
+            git commit -m "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}"
+            created_release_commit=true
+          fi
+
+          release_branch="release/memos-cloud-cli-${RELEASE_TAG}"
+          if [ "${created_release_commit}" = "true" ]; then
+            remote_branch_sha="$(git ls-remote --heads origin "${release_branch}" | awk '{print $1}')"
+            if [ -n "${remote_branch_sha}" ] && [ "${remote_branch_sha}" != "$(git rev-parse HEAD)" ]; then
+              echo "::error::${release_branch} exists at a different commit; refusing to overwrite it."
+              exit 1
+            elif [ -z "${remote_branch_sha}" ]; then
+              git push origin "HEAD:refs/heads/${release_branch}"
+            fi
+          fi
+
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            tagged_version="$(git show "${RELEASE_TAG}:package.json" | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk).on("end", () => console.log(JSON.parse(data).version))')"
+            if [ "${tagged_version}" != "${RELEASE_VERSION}" ]; then
+              echo "::error::Tag ${RELEASE_TAG} contains package version ${tagged_version}, expected ${RELEASE_VERSION}; refusing to move it."
+              exit 1
+            fi
+            echo "Tag ${RELEASE_TAG} already exists with the expected package version; leaving it unchanged."
+          else
+            git tag "${RELEASE_TAG}"
+            git push origin "refs/tags/${RELEASE_TAG}"
+          fi
+
+          release_flags=()
+          if [[ "${RELEASE_VERSION}" == *-* || "${NPM_DIST_TAG}" != "latest" ]]; then
+            release_flags+=(--prerelease)
+            echo "Marking GitHub Release ${RELEASE_TAG} as prerelease because version=${RELEASE_VERSION}, npm_dist_tag=${NPM_DIST_TAG}."
+          fi
+
+          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "GitHub Release ${RELEASE_TAG} already exists."
+          else
+            gh release create "${RELEASE_TAG}" \
+              --repo "${GITHUB_REPOSITORY}" \
+              --target "$(git rev-parse HEAD)" \
+              --title "${RELEASE_TITLE}" \
+              --notes-file release-metadata/release-notes.md \
+              "${release_flags[@]}" \
+              release-assets/*.tar.gz
+          fi
+
+          if [ "${created_release_commit}" != "true" ]; then
+            echo "No version changes require a PR."
+          elif gh pr view "${release_branch}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "Version PR already exists for ${release_branch}."
+          else
+            gh pr create \
+              --repo "${GITHUB_REPOSITORY}" \
+              --base "${DEFAULT_BRANCH}" \
+              --head "${release_branch}" \
+              --title "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}" \
+              --body "Synchronizes package.json, pyproject.toml, and src/memos_cli/__init__.py for the published CLI release."
+          fi

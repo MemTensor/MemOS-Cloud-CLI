@@ -9,39 +9,10 @@ const https = require("node:https");
 const { spawn } = require("node:child_process");
 
 const pkg = require("../package.json");
+const releaseAssets = require("../release-assets.json");
+const SUPPORTED_TARGETS = new Set(releaseAssets.targets);
 
-if (process.env.MEMOS_INSTALL_SKIP_DOWNLOAD === "1" || process.env.MEMOS_INSTALL_SKIP_DOWNLOAD === "true") {
-  process.exit(0);
-}
-
-const target = resolveTarget();
-const assetName = `memos-${pkg.version}-${target}.tar.gz`;
-const downloadUrl =
-  process.env.MEMOS_BINARY_URL ||
-  `https://memos-test.oss-cn-shanghai.aliyuncs.com/${assetName}`;
-
-const installDir = path.join(__dirname, "..", "bin");
-const archivePath = path.join(os.tmpdir(), assetName);
-const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
-
-fs.mkdirSync(installDir, { recursive: true });
-
-if (!downloadUrl) {
-  console.error("MEMOS_BINARY_URL is not set");
-  process.exit(1);
-}
-
-download(downloadUrl, archivePath)
-  .then(() => extractArchive(archivePath, installDir))
-  .then(() => clearQuarantine(path.join(installDir, binaryName)))
-  .then(() => makeExecutable(path.join(installDir, binaryName)))
-  .catch((error) => {
-    console.error(`Failed to install MemOS CLI binary from ${downloadUrl}`);
-    console.error(error.message);
-    process.exit(1);
-  });
-
-function resolveTarget() {
+function resolveTarget(platformName = process.platform, archName = process.arch) {
   const platformMap = {
     darwin: "darwin",
     linux: "linux",
@@ -52,14 +23,31 @@ function resolveTarget() {
     x64: "x64",
   };
 
-  const platform = platformMap[process.platform];
-  const arch = archMap[process.arch];
+  const platform = platformMap[platformName];
+  const arch = archMap[archName];
 
-  if (!platform || !arch) {
-    throw new Error(`Unsupported platform: ${process.platform}/${process.arch}`);
+  const target = platform && arch ? `${platform}-${arch}` : "";
+  if (!target || !SUPPORTED_TARGETS.has(target)) {
+    throw new Error(`Unsupported platform: ${platformName}/${archName}`);
   }
+  return target;
+}
 
-  return `${platform}-${arch}`;
+async function main() {
+  if (process.env.MEMOS_INSTALL_SKIP_DOWNLOAD === "1" || process.env.MEMOS_INSTALL_SKIP_DOWNLOAD === "true") return;
+
+  const target = resolveTarget();
+  const assetName = `memos-${pkg.version}-${target}.tar.gz`;
+  const downloadUrl = process.env.MEMOS_BINARY_URL || `${releaseAssets.public_base_url}/${assetName}`;
+  const installDir = path.join(__dirname, "..", "bin");
+  const archivePath = path.join(os.tmpdir(), assetName);
+  const binaryName = process.platform === "win32" ? "memos.exe" : "memos";
+  fs.mkdirSync(installDir, { recursive: true });
+
+  await download(downloadUrl, archivePath);
+  await extractArchive(archivePath, installDir);
+  await clearQuarantine(path.join(installDir, binaryName));
+  makeExecutable(path.join(installDir, binaryName));
 }
 
 function download(url, destination) {
@@ -125,3 +113,12 @@ function clearQuarantine(filePath) {
     child.on("error", () => resolve());
   });
 }
+
+if (require.main === module) {
+  main().catch((error) => {
+    console.error(`Failed to install MemOS CLI binary: ${error.message}`);
+    process.exitCode = 1;
+  });
+}
+
+module.exports = { SUPPORTED_TARGETS, resolveTarget };

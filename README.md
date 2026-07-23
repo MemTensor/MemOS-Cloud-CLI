@@ -66,7 +66,7 @@ MemOS-CLI/
 npm install -g @memtensor/memos-cloud-cli@beta
 ```
 
-The npm package downloads a prebuilt MemOS CLI binary for the current platform during installation, so end users do not need a local Python environment.
+The npm package downloads a prebuilt MemOS CLI binary, so end users do not need a local Python environment. Release artifacts currently cover macOS arm64/x64, Linux x64, and Windows x64; unsupported targets fail explicitly instead of requesting a nonexistent object.
 
 ### Development
 

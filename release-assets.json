@@ -1,0 +1,13 @@
+{
+  "schema": 1,
+  "bucket": "REPLACE_WITH_PRODUCTION_BUCKET",
+  "endpoint": "https://REPLACE_WITH_PRODUCTION_OSS_ENDPOINT",
+  "region": "REPLACE_WITH_PRODUCTION_REGION",
+  "public_base_url": "https://example.invalid/memos-cloud-cli",
+  "targets": [
+    "darwin-arm64",
+    "darwin-x64",
+    "linux-x64",
+    "windows-x64"
+  ]
+}

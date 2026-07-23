@@ -23,8 +23,13 @@ if (!pkg.bin || !pkg.bin.memos) {
   issues.push("package.json must define the memos bin entry.");
 }
 
-if (!Array.isArray(pkg.files) || !pkg.files.includes("bin") || !pkg.files.includes("scripts")) {
-  issues.push("package.json files must include bin and scripts.");
+if (
+  !Array.isArray(pkg.files) ||
+  !pkg.files.includes("bin/memos.js") ||
+  !pkg.files.includes("scripts/postinstall.js") ||
+  !pkg.files.includes("release-assets.json")
+) {
+  issues.push("package.json files must include only the runtime npm wrapper files.");
 }
 
 if (!fs.existsSync(readmePath)) {
