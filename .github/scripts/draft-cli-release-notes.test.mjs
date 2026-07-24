@@ -7,21 +7,144 @@ import test from "node:test";
 import {
   cleanVersion,
   compareSemver,
+  docsPreviewFromDraft,
   ensureSourceHint,
+  postprocessDraftFromEvidence,
   reportExternalFailureFromEnv,
   requestDraft,
+  requestValidatedDraft,
+  RELEASE_NOTE_QUALITY_REQUEST,
   resolvePreviousRef,
   validateManualNotes,
 } from "./draft-cli-release-notes.mjs";
 
 const evidence = { repo: "MemTensor/MemOS-Cloud-CLI", current_tag: "v1.0.6", target_version: "v1.0.6" };
+const cliEvidence = {
+  ...evidence,
+  release_note_quality_request: RELEASE_NOTE_QUALITY_REQUEST,
+  commits: [
+    {
+      sha: "abc1234abc1234abc1234abc1234abc1234abc1",
+      short_sha: "abc1234",
+      subject: "feat: add CLI binary installer",
+    },
+  ],
+  pull_requests: [],
+};
 const response = (status, body) => ({ status, ok: status >= 200 && status < 300, async text() { return JSON.stringify(body); } });
 
 test("CLI manual notes remain evidence backed", () => {
-  const notes = `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"text_cn":"新增命令","text_en":"Added command","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`;
+  const notes = `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Added","text_cn":"新增命令","text_en":"Added command","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`;
   assert.equal(validateManualNotes(notes), notes);
   assert.match(ensureSourceHint(notes), /source-id=memos-cloud-cli/);
   assert.equal(cleanVersion("v1.0.6"), "1.0.6");
+});
+
+test("CLI manual notes cannot bypass language or source-ref validation", () => {
+  const mixedLanguageNotes = `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Added","text_cn":"新增命令","text_en":"Added 命令","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`;
+  assert.throws(() => validateManualNotes(mixedLanguageNotes), /Chinese text in text_cn and English text in text_en/);
+
+  const invalidRefNotes = `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Added","text_cn":"新增命令","text_en":"Added command","source_refs":["not a ref"]}],"coverage":{"needs_review":false}}\n-->`;
+  assert.throws(() => validateManualNotes(invalidRefNotes), /invalid categories, text, or source_refs/);
+});
+
+test("CLI requests multi-candidate release-note quality from the draft service", () => {
+  assert.equal(RELEASE_NOTE_QUALITY_REQUEST.candidate_count, 3);
+  assert.match(RELEASE_NOTE_QUALITY_REQUEST.selection_policy.join("\n"), /source_ref validity/);
+  assert.equal(RELEASE_NOTE_QUALITY_REQUEST.repair_policy.max_repair_attempts, 3);
+});
+
+test("CLI postprocess rejects mixed-language output and missing important refs", () => {
+  const draft = postprocessDraftFromEvidence(cliEvidence, {
+    ok: true,
+    needs_review: false,
+    coverage: { needs_review: false },
+    release_items: [
+      {
+        category: "Added",
+        text_cn: "新增 CLI 安装器",
+        text_en: "Added CLI 安装器",
+        source_refs: ["deadbee"],
+      },
+    ],
+  });
+  assert.equal(draft.ok, false);
+  assert.equal(draft.needs_review, true);
+  assert.deepEqual(draft.coverage.invalid_source_refs, ["deadbee"]);
+  assert.equal(draft.coverage.missing_required_count, 1);
+  assert.equal(draft.language_issues.length, 1);
+});
+
+test("CLI repairs structured needs-review drafts with validation context", async () => {
+  const previous = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: "test-token",
+      DOC_AGENT_RELEASE_NOTES_DRAFT_URL: "https://example.invalid/internal/release-notes/draft",
+    });
+    const calls = [];
+    const fetchImpl = async (_url, options) => {
+      const body = JSON.parse(options.body);
+      calls.push(body);
+      if (calls.length === 1) {
+        return response(200, {
+          ok: false,
+          needs_review: true,
+          coverage: { needs_review: true },
+          release_items: [
+            {
+              category: "Added",
+              text_cn: "新增 CLI 安装器",
+              text_en: "Added CLI 安装器",
+              source_refs: ["abc1234"],
+            },
+          ],
+        });
+      }
+      return response(200, {
+        ok: true,
+        needs_review: false,
+        confidence: "high",
+        coverage: { needs_review: false },
+        release_items: [
+          {
+            category: "Added",
+            text_cn: "新增 CLI 二进制安装器",
+            text_en: "Added the CLI binary installer.",
+            source_refs: ["abc1234"],
+          },
+        ],
+      });
+    };
+    const draft = await requestValidatedDraft(cliEvidence, { fetchImpl, sleep: async () => {} });
+    assert.equal(draft.ok, true);
+    assert.equal(draft.repair_attempt_count, 1);
+    assert.equal(calls[0].release_note_quality_request.candidate_count, 3);
+    assert.equal(calls[1].release_note_repair_context.validation_report.issue_count, 1);
+  } finally {
+    process.env = previous;
+  }
+});
+
+test("CLI docs preview renders plugin changelog entries from validated items", () => {
+  const draft = postprocessDraftFromEvidence(cliEvidence, {
+    ok: true,
+    needs_review: false,
+    coverage: { needs_review: false },
+    release_items: [
+      {
+        category: "Added",
+        text_cn: "新增 CLI 二进制安装器",
+        text_en: "Added the CLI binary installer.",
+        source_refs: ["abc1234"],
+      },
+    ],
+  });
+  const preview = docsPreviewFromDraft(draft, { targetVersion: "1.0.7", publishedAt: "2026-07-24T02:00:00Z" });
+  assert.equal(preview.entries.cn.name, "v1.0.7");
+  assert.equal(preview.entries.cn.date, "2026-07-24");
+  assert.equal(preview.entries.cn.products.plugin["New Features"][0].type, "MemOS CLI");
+  assert.deepEqual(preview.entries.en.products.plugin["New Features"][0].changedInfo, ["Added the CLI binary installer."]);
 });
 
 test("CLI SemVer comparison handles prerelease numbers and ignores build metadata", () => {
@@ -101,6 +224,33 @@ test("CLI retries transient draft failures and reports the third", async () => {
     };
     await assert.rejects(requestDraft(evidence, { fetchImpl, sleep: async () => {} }), /attempt 3/);
     assert.equal(calls.filter((item) => item.url.includes("/failure")).length, 1);
+  } finally {
+    process.env = previous;
+  }
+});
+
+test("CLI exhausted draft failures redact configured URLs and tokens", async () => {
+  const previous = { ...process.env };
+  try {
+    Object.assign(process.env, {
+      DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: "test-token",
+      DOC_AGENT_RELEASE_NOTES_DRAFT_URL: "https://example.invalid/internal/release-notes/draft",
+      DOC_AGENT_RELEASE_FAILURE_URL: "https://example.invalid/internal/release-workflow/failure",
+    });
+    const calls = [];
+    const fetchImpl = async (url, options) => {
+      if (url.includes("/failure")) {
+        calls.push({ url, body: JSON.parse(options.body) });
+        return response(200, { ok: true });
+      }
+      throw Object.assign(new Error("connect ECONNREFUSED https://example.invalid/internal/release-notes/draft with Bearer test-token"), {
+        retryable: true,
+      });
+    };
+    await assert.rejects(requestDraft(evidence, { fetchImpl, sleep: async () => {} }), /https:\/\/\*\*\*/);
+    const report = calls[0].body;
+    assert.equal(report.attempts.length, 3);
+    assert.doesNotMatch(JSON.stringify(report), /example\.invalid|internal\/release-notes|test-token/);
   } finally {
     process.env = previous;
   }

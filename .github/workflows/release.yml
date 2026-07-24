@@ -171,6 +171,8 @@ jobs:
           RELEASE_NOTES_FILE: ${{ steps.release_notes.outputs.release_notes_file }}
           EVIDENCE_FILE: ${{ steps.release_notes.outputs.evidence_file }}
           DRAFT_FILE: ${{ steps.release_notes.outputs.draft_file }}
+          DOCS_PREVIEW_FILE: ${{ steps.release_notes.outputs.docs_preview_file }}
+          DOCS_PREVIEW_MARKDOWN_FILE: ${{ steps.release_notes.outputs.docs_preview_markdown_file }}
           DRAFT_USED: ${{ steps.release_notes.outputs.draft_used }}
           PREVIOUS_TAG: ${{ steps.release_notes.outputs.previous_tag }}
           CURRENT_TAG: ${{ steps.release_notes.outputs.current_tag }}
@@ -203,6 +205,12 @@ jobs:
           elif [ -n "${DRAFT_FILE}" ] && [ -s "${DRAFT_FILE}" ]; then
             cp "${DRAFT_FILE}" "${metadata_dir}/release-notes-draft.json"
           fi
+          if [ -n "${DOCS_PREVIEW_FILE}" ] && [ -s "${DOCS_PREVIEW_FILE}" ]; then
+            cp "${DOCS_PREVIEW_FILE}" "${metadata_dir}/docs-preview.json"
+          fi
+          if [ -n "${DOCS_PREVIEW_MARKDOWN_FILE}" ] && [ -s "${DOCS_PREVIEW_MARKDOWN_FILE}" ]; then
+            cp "${DOCS_PREVIEW_MARKDOWN_FILE}" "${metadata_dir}/docs-preview.md"
+          fi
           cp package.json pyproject.toml src/memos_cli/__init__.py "${metadata_dir}/"
 
           {
@@ -230,6 +238,10 @@ jobs:
             if [ -f "${metadata_dir}/release-notes-draft.json" ]; then
               echo "- release-notes-draft.json"
             fi
+            if [ -f "${metadata_dir}/docs-preview.md" ]; then
+              echo "- docs-preview.md"
+              echo "- docs-preview.json"
+            fi
           } > "${metadata_dir}/README.md"
 
           {
@@ -245,7 +257,13 @@ jobs:
             echo "- validation_attempt_count: \`${VALIDATION_ATTEMPT_COUNT:-n/a}\`"
             echo "- repair_attempt_count: \`${REPAIR_ATTEMPT_COUNT:-n/a}\`"
             echo
-            echo "Download the workflow artifact \`memos-cloud-cli-release-inspection\` to review release-notes.md, release-notes-draft.json, redacted evidence.json, npm-pack.json, and release-assets-manifest.json."
+            echo "Download the workflow artifact \`memos-cloud-cli-release-inspection\` to review release-notes.md, release-notes-draft.json, redacted evidence.json, npm-pack.json, docs-preview.md, docs-preview.json, and release-assets-manifest.json."
+            if [ -f "${metadata_dir}/docs-preview.md" ]; then
+              echo
+              echo "#### Docs preview"
+              echo
+              sed -n '1,120p' "${metadata_dir}/docs-preview.md"
+            fi
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - uses: actions/upload-artifact@v4
@@ -365,6 +383,7 @@ jobs:
       - name: Refuse implicit recovery of an npm-only release
         if: ${{ inputs.dry_run != true }}
         env:
+          GH_TOKEN: ${{ github.token }}
           PACKAGE_NAME: "@memtensor/memos-cloud-cli"
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
@@ -373,11 +392,30 @@ jobs:
         run: |
           set -euo pipefail
           if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            tag_exists=false
+            release_exists=false
             if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-              echo "${PACKAGE_NAME}@${RELEASE_VERSION} and ${RELEASE_TAG} already exist; treating this as an idempotent rerun."
+              tag_exists=true
+            fi
+            if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              release_exists=true
+            fi
+            if [ "${tag_exists}" = "true" ] && [ "${release_exists}" = "true" ]; then
+              echo "${PACKAGE_NAME}@${RELEASE_VERSION}, ${RELEASE_TAG}, and the GitHub Release already exist; treating this as an idempotent rerun."
             elif [ "${RECOVER_EXISTING_NPM_RELEASE}" != "true" ]; then
-              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} exists but ${RELEASE_TAG} does not. Refusing to invent missing release metadata without explicit recovery mode."
+              missing=()
+              if [ "${tag_exists}" != "true" ]; then
+                missing+=("${RELEASE_TAG}")
+              fi
+              if [ "${release_exists}" != "true" ]; then
+                missing+=("GitHub Release ${RELEASE_TAG}")
+              fi
+              printf -v missing_text "%s, " "${missing[@]}"
+              missing_text="${missing_text%, }"
+              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} already exists on npm, but ${missing_text} is missing. Set recover_existing_npm_release=true only for an intentional metadata backfill."
               exit 1
+            else
+              echo "Recovery mode enabled; npm version exists and missing GitHub metadata may be reconstructed."
             fi
           fi
 
@@ -400,6 +438,7 @@ jobs:
         if: ${{ inputs.dry_run != true }}
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
           MEMOS_INSTALL_SKIP_DOWNLOAD: "1"
           PACKAGE_NAME: "@memtensor/memos-cloud-cli"
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
@@ -413,12 +452,29 @@ jobs:
           set -euo pipefail
           npm install --ignore-scripts
           if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            tag_exists=false
+            release_exists=false
             if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-              echo "${PACKAGE_NAME}@${RELEASE_VERSION} and ${RELEASE_TAG} already exist; publish is already complete."
+              tag_exists=true
+            fi
+            if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+              release_exists=true
+            fi
+            if [ "${tag_exists}" = "true" ] && [ "${release_exists}" = "true" ]; then
+              echo "${PACKAGE_NAME}@${RELEASE_VERSION}, ${RELEASE_TAG}, and the GitHub Release already exist; publish is already complete."
             elif [ "${RECOVER_EXISTING_NPM_RELEASE}" = "true" ]; then
-              echo "Recovery mode enabled; npm version exists, so publish is skipped."
+              echo "Recovery mode enabled; npm version exists, so publish is skipped and missing GitHub metadata may be reconstructed."
             else
-              echo "::error::Existing npm version requires explicit recovery mode."
+              missing=()
+              if [ "${tag_exists}" != "true" ]; then
+                missing+=("${RELEASE_TAG}")
+              fi
+              if [ "${release_exists}" != "true" ]; then
+                missing+=("GitHub Release ${RELEASE_TAG}")
+              fi
+              printf -v missing_text "%s, " "${missing[@]}"
+              missing_text="${missing_text%, }"
+              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} already exists on npm, but ${missing_text} is missing. Set recover_existing_npm_release=true only for an intentional metadata backfill."
               exit 1
             fi
             exit 0
