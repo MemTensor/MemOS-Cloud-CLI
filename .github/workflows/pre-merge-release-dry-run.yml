@@ -1,0 +1,54 @@
+name: MemOS CLI - Pre-Merge Release Dry Run
+
+on:
+  push:
+    branches:
+      - "docs-sync/**"
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/workflows/pre-merge-release-dry-run.yml"
+      - ".github/workflows/post-merge-release-dry-run.yml"
+      - ".github/scripts/**"
+      - "scripts/**"
+      - "package.json"
+      - "release-assets.json"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: ${{ github.repository == 'MemTensor/MemOS-Cloud-CLI' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-dry-run.yml
+    with:
+      version: "1.0.7"
+      tag: "latest"
+      baseline_ref: "c18ced5"
+      artifact_name: "memos-cloud-cli-pre-merge-release-inspection"
+      release_notes: |
+        ## Changelog
+
+        ### Improved
+        - **Release safety checks**: Validates evidence, assets, and immutable publication metadata before a CLI release can write externally.
+
+        <!-- doc-agent-release-notes-json
+        {
+          "schema": "memos.plugin.release_notes.v1",
+          "items": [
+            {
+              "category": "Improved",
+              "text_cn": "**CLI 发布安全检查**：发布前校验真实变更证据、四平台资产与不可变发布元数据，失败时保留可检查错误。",
+              "text_en": "**CLI release safety checks**: Validates real change evidence, four-platform assets, and immutable publication metadata while preserving inspectable failures.",
+              "source_refs": ["23060daa18713bec399679737e4df2ce5c18c934"]
+            }
+          ],
+          "coverage": {
+            "needs_review": false
+          }
+        }
+        -->
+
+        <!-- doc-agent: source-id=memos-cloud-cli -->

@@ -32,43 +32,6 @@ on:
         required: true
         type: boolean
         default: false
-  workflow_call:
-    inputs:
-      version:
-        description: "Version to publish or dry-run (for example 1.0.7 or 1.0.7-beta.1)"
-        required: true
-        type: string
-      tag:
-        description: "npm dist-tag (latest for production, beta/next/alpha for testing)"
-        required: false
-        type: string
-        default: "latest"
-      git_ref:
-        description: "Git ref to build. Leave blank to use the caller ref."
-        required: false
-        type: string
-        default: ""
-      release_notes:
-        description: "Optional evidence-backed Markdown. Leave blank to draft it from git evidence."
-        required: false
-        type: string
-        default: ""
-      dry_run:
-        description: "Build and validate all assets without OSS/npm/GitHub mutations."
-        required: false
-        type: boolean
-        default: true
-      publish_confirmation:
-        description: "Required only when dry_run=false. Must exactly equal: PUBLISH v<version>"
-        required: false
-        type: string
-        default: ""
-      recover_existing_npm_release:
-        description: "Explicitly allow reconstructing GitHub metadata for a version already on npm. Keep false for normal releases."
-        required: false
-        type: boolean
-        default: false
-
 concurrency:
   group: memos-cloud-cli-release
   cancel-in-progress: false
@@ -84,11 +47,15 @@ jobs:
       version: ${{ steps.metadata.outputs.version }}
       tag_name: ${{ steps.metadata.outputs.tag_name }}
       release_title: ${{ steps.metadata.outputs.release_title }}
+      release_commit_sha: ${{ steps.release_source.outputs.release_commit_sha }}
+      release_branch: ${{ steps.release_source.outputs.release_branch }}
+      created_release_commit: ${{ steps.release_source.outputs.created_release_commit }}
     steps:
       - uses: actions/checkout@v4
         with:
           ref: ${{ inputs.git_ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: ${{ inputs.dry_run != true }}
 
       - uses: actions/setup-node@v4
         with:
@@ -109,6 +76,8 @@ jobs:
           NPM_DIST_TAG: ${{ inputs.tag }}
           DRY_RUN: ${{ inputs.dry_run }}
           PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+          RELEASE_GIT_REF: ${{ inputs.git_ref }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
           version="${RELEASE_VERSION#v}"
@@ -122,6 +91,26 @@ jobs:
           fi
           if ! [[ "${NPM_DIST_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
             echo "::error::tag must be a valid npm dist-tag."
+            exit 1
+          fi
+          if [[ "${version}" == *-* ]] && [ "${NPM_DIST_TAG}" = "latest" ]; then
+            echo "::error::Prerelease versions cannot use the latest npm dist-tag."
+            exit 1
+          fi
+          if [[ "${version}" != *-* ]] && [ "${NPM_DIST_TAG}" != "latest" ]; then
+            echo "::error::Stable versions must use the latest npm dist-tag."
+            exit 1
+          fi
+          if [ "${DRY_RUN}" != "true" ] && [ "${GITHUB_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::Real releases must be dispatched from the protected default branch ${DEFAULT_BRANCH}; got ${GITHUB_REF}."
+            exit 1
+          fi
+          if [ "${DRY_RUN}" != "true" ] && [ -n "${RELEASE_GIT_REF//[[:space:]]/}" ] && [ "${RELEASE_GIT_REF}" != "${DEFAULT_BRANCH}" ] && [ "${RELEASE_GIT_REF}" != "refs/heads/${DEFAULT_BRANCH}" ]; then
+            echo "::error::Real releases cannot override git_ref away from the protected default branch ${DEFAULT_BRANCH}."
+            exit 1
+          fi
+          if [ "${RECOVER_EXISTING_NPM_RELEASE}" = "true" ]; then
+            echo "::error::Automatic npm-only recovery is disabled for CLI binaries. Backfill an audited baseline tag from npm gitHead instead of rebuilding historical assets from a different source tree."
             exit 1
           fi
           node .github/scripts/validate-release-confirmation.mjs
@@ -149,6 +138,7 @@ jobs:
           node --test .github/scripts/*.test.mjs
           python -m pip install -e .
           python -m unittest discover -s tests -p 'test_*.py'
+          python -m unittest discover -s scripts -p '*test*.py'
           npm pack --dry-run --json > "${RUNNER_TEMP}/memos-cloud-cli-pack.json"
 
       - name: Draft evidence-backed GitHub Release notes
@@ -163,9 +153,83 @@ jobs:
           DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
         run: node .github/scripts/draft-cli-release-notes.mjs
 
-      - name: Prepare release metadata artifact
+      - name: Push a durable release source before external publication
+        id: release_source
+        if: ${{ inputs.dry_run != true }}
         shell: bash
         env:
+          RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
+          RELEASE_TAG: ${{ steps.metadata.outputs.tag_name }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          source_sha="$(git rev-parse HEAD)"
+          release_branch="release/memos-cloud-cli-${RELEASE_TAG}"
+          remote_branch_sha="$(git ls-remote --heads origin "${release_branch}" | awk '{print $1}')"
+          created_release_commit=false
+
+          if [ -n "${remote_branch_sha}" ]; then
+            git fetch --no-tags origin "${release_branch}"
+            remote_branch_sha="$(git rev-parse FETCH_HEAD)"
+            remote_parent_sha="$(git rev-parse "${remote_branch_sha}^" 2>/dev/null || true)"
+            if [ "${remote_branch_sha}" != "${source_sha}" ] && [ "${remote_parent_sha}" != "${source_sha}" ]; then
+              echo "::error::${release_branch} is not derived from the selected release source; refusing to reuse or overwrite it."
+              exit 1
+            fi
+            git checkout --detach "${remote_branch_sha}"
+            node scripts/sync-version.js "${RELEASE_VERSION}" --check
+            if [ "${remote_branch_sha}" != "${source_sha}" ]; then
+              created_release_commit=true
+            fi
+            echo "::notice::Reusing durable release branch ${release_branch} at ${remote_branch_sha}."
+          else
+            git add package.json pyproject.toml src/memos_cli/__init__.py
+            if ! git diff --staged --quiet; then
+              git commit -m "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}"
+              created_release_commit=true
+            fi
+
+            if [ "${created_release_commit}" = "true" ]; then
+              attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-release-branch-push-attempts"
+              mkdir -p "${attempt_dir}"
+              for attempt in 1 2 3; do
+                set +e
+                git push origin "HEAD:refs/heads/${release_branch}" >"${attempt_dir}/${attempt}.log" 2>&1
+                push_status=$?
+                set -e
+                sed -n '1,120p' "${attempt_dir}/${attempt}.log"
+                if [ "${push_status}" = 0 ]; then
+                  break
+                fi
+                if [ "${attempt}" = 3 ]; then
+                  RELEASE_FAILURE_PHASE=github-release-branch-push \
+                    RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                    node .github/scripts/draft-cli-release-notes.mjs \
+                    || echo "::warning::Failed to send exhausted branch-push evidence."
+                  echo "::error::Failed to push durable release branch after three attempts."
+                  exit 1
+                fi
+                sleep "$((attempt * 5))"
+              done
+            fi
+          fi
+
+          release_commit_sha="$(git rev-parse HEAD)"
+          node scripts/sync-version.js "${RELEASE_VERSION}" --check
+          {
+            echo "release_commit_sha=${release_commit_sha}"
+            echo "release_branch=${release_branch}"
+            echo "created_release_commit=${created_release_commit}"
+          } >> "${GITHUB_OUTPUT}"
+
+      - name: Prepare release metadata artifact
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DRAFT_STEP_OUTCOME: ${{ steps.release_notes.outcome }}
           DRY_RUN: ${{ inputs.dry_run }}
           RELEASE_VERSION: ${{ steps.metadata.outputs.version }}
           RELEASE_NOTES_FILE: ${{ steps.release_notes.outputs.release_notes_file }}
@@ -173,6 +237,7 @@ jobs:
           DRAFT_FILE: ${{ steps.release_notes.outputs.draft_file }}
           DOCS_PREVIEW_FILE: ${{ steps.release_notes.outputs.docs_preview_file }}
           DOCS_PREVIEW_MARKDOWN_FILE: ${{ steps.release_notes.outputs.docs_preview_markdown_file }}
+          QUALITY_REPORT_FILE: ${{ steps.release_notes.outputs.quality_report_file }}
           DRAFT_USED: ${{ steps.release_notes.outputs.draft_used }}
           PREVIOUS_TAG: ${{ steps.release_notes.outputs.previous_tag }}
           CURRENT_TAG: ${{ steps.release_notes.outputs.current_tag }}
@@ -186,12 +251,14 @@ jobs:
           metadata_dir="${RUNNER_TEMP}/memos-cloud-cli-release-metadata"
           mkdir -p "${metadata_dir}"
 
-          if [ -z "${RELEASE_NOTES_FILE}" ] || [ ! -s "${RELEASE_NOTES_FILE}" ]; then
+          if [ "${DRAFT_STEP_OUTCOME}" = "success" ] && { [ -z "${RELEASE_NOTES_FILE}" ] || [ ! -s "${RELEASE_NOTES_FILE}" ]; }; then
             echo "::error::Release notes file was not generated."
             exit 1
           fi
 
-          cp "${RELEASE_NOTES_FILE}" "${metadata_dir}/release-notes.md"
+          if [ -n "${RELEASE_NOTES_FILE}" ] && [ -s "${RELEASE_NOTES_FILE}" ]; then
+            cp "${RELEASE_NOTES_FILE}" "${metadata_dir}/release-notes.md"
+          fi
           cp "${RUNNER_TEMP}/memos-cloud-cli-pack.json" "${metadata_dir}/npm-pack.json"
           if [ -n "${EVIDENCE_FILE}" ] && [ -s "${EVIDENCE_FILE}" ]; then
             cp "${EVIDENCE_FILE}" "${metadata_dir}/evidence.json"
@@ -211,12 +278,19 @@ jobs:
           if [ -n "${DOCS_PREVIEW_MARKDOWN_FILE}" ] && [ -s "${DOCS_PREVIEW_MARKDOWN_FILE}" ]; then
             cp "${DOCS_PREVIEW_MARKDOWN_FILE}" "${metadata_dir}/docs-preview.md"
           fi
+          if [ -n "${QUALITY_REPORT_FILE}" ] && [ -s "${QUALITY_REPORT_FILE}" ]; then
+            cp "${QUALITY_REPORT_FILE}" "${metadata_dir}/quality-report.json"
+          elif [ "${DRAFT_STEP_OUTCOME}" = "success" ]; then
+            echo "::error::Quality report was not generated."
+            exit 1
+          fi
           cp package.json pyproject.toml src/memos_cli/__init__.py "${metadata_dir}/"
 
           {
             echo "# MemOS CLI release inspection"
             echo
             echo "- dry_run: ${DRY_RUN}"
+            echo "- draft_step_outcome: ${DRAFT_STEP_OUTCOME}"
             echo "- version: ${RELEASE_VERSION}"
             echo "- draft_used: ${DRAFT_USED:-unknown}"
             echo "- previous_tag: ${PREVIOUS_TAG:-n/a}"
@@ -231,6 +305,7 @@ jobs:
             echo
             echo "- release-notes.md"
             echo "- npm-pack.json"
+            echo "- quality-report.json"
             echo "- package.json / pyproject.toml / src/memos_cli/__init__.py"
             if [ -n "${EVIDENCE_FILE}" ] && [ -s "${EVIDENCE_FILE}" ]; then
               echo "- evidence.json (redacted; no full diff or prompt guidance)"
@@ -257,7 +332,7 @@ jobs:
             echo "- validation_attempt_count: \`${VALIDATION_ATTEMPT_COUNT:-n/a}\`"
             echo "- repair_attempt_count: \`${REPAIR_ATTEMPT_COUNT:-n/a}\`"
             echo
-            echo "Download the workflow artifact \`memos-cloud-cli-release-inspection\` to review release-notes.md, release-notes-draft.json, redacted evidence.json, npm-pack.json, docs-preview.md, docs-preview.json, and release-assets-manifest.json."
+            echo "Download the workflow artifact \`memos-cloud-cli-release-inspection\` to review release-notes.md, release-notes-draft.json, redacted evidence.json, quality-report.json, npm-pack.json, docs-preview.md, docs-preview.json, and release-assets-manifest.json."
             if [ -f "${metadata_dir}/docs-preview.md" ]; then
               echo
               echo "#### Docs preview"
@@ -267,6 +342,7 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
       - uses: actions/upload-artifact@v4
+        if: ${{ always() }}
         with:
           name: release-metadata
           path: ${{ runner.temp }}/memos-cloud-cli-release-metadata
@@ -294,8 +370,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.git_ref || github.ref }}
+          ref: ${{ needs.metadata.outputs.release_commit_sha || inputs.git_ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: ${{ inputs.dry_run != true }}
 
       - uses: actions/setup-node@v4
         with:
@@ -332,8 +409,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.git_ref || github.ref }}
+          ref: ${{ needs.metadata.outputs.release_commit_sha || inputs.git_ref || github.ref }}
           fetch-depth: 0
+          persist-credentials: ${{ inputs.dry_run != true }}
 
       - uses: actions/setup-node@v4
         with:
@@ -380,43 +458,60 @@ jobs:
         if: ${{ inputs.dry_run == true }}
         run: echo "::notice::dry_run=true; OSS, npm, tag, GitHub Release, and version PR were skipped."
 
-      - name: Refuse implicit recovery of an npm-only release
+      - name: Reconcile tags and GitHub Release inventory before external writes
         if: ${{ inputs.dry_run != true }}
         env:
           GH_TOKEN: ${{ github.token }}
           PACKAGE_NAME: "@memtensor/memos-cloud-cli"
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
-          RECOVER_EXISTING_NPM_RELEASE: ${{ inputs.recover_existing_npm_release }}
+          RELEASE_COMMIT_SHA: ${{ needs.metadata.outputs.release_commit_sha }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
         shell: bash
         run: |
           set -euo pipefail
-          if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-            tag_exists=false
-            release_exists=false
-            if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-              tag_exists=true
-            fi
-            if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-              release_exists=true
-            fi
-            if [ "${tag_exists}" = "true" ] && [ "${release_exists}" = "true" ]; then
-              echo "${PACKAGE_NAME}@${RELEASE_VERSION}, ${RELEASE_TAG}, and the GitHub Release already exist; treating this as an idempotent rerun."
-            elif [ "${RECOVER_EXISTING_NPM_RELEASE}" != "true" ]; then
-              missing=()
-              if [ "${tag_exists}" != "true" ]; then
-                missing+=("${RELEASE_TAG}")
-              fi
-              if [ "${release_exists}" != "true" ]; then
-                missing+=("GitHub Release ${RELEASE_TAG}")
-              fi
-              printf -v missing_text "%s, " "${missing[@]}"
-              missing_text="${missing_text%, }"
-              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} already exists on npm, but ${missing_text} is missing. Set recover_existing_npm_release=true only for an intentional metadata backfill."
+          tag_exists=false
+          if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
+            tag_exists=true
+            git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            tag_commit_sha="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+            if [ "${tag_commit_sha}" != "${RELEASE_COMMIT_SHA}" ]; then
+              echo "::error::Existing tag ${RELEASE_TAG} targets ${tag_commit_sha}, expected ${RELEASE_COMMIT_SHA}."
               exit 1
-            else
-              echo "Recovery mode enabled; npm version exists and missing GitHub metadata may be reconstructed."
             fi
+          fi
+
+          expected_prerelease=false
+          if [[ "${RELEASE_VERSION}" == *-* || "${NPM_DIST_TAG}" != "latest" ]]; then
+            expected_prerelease=true
+          fi
+          inventory_file="${RUNNER_TEMP}/memos-cloud-cli-prepublish-releases.json"
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${inventory_file}"
+          inventory_report="$(
+            RELEASE_INVENTORY_FILE="${inventory_file}" \
+              RELEASE_TAG="${RELEASE_TAG}" \
+              EXPECTED_RELEASE_DRAFT=false \
+              EXPECTED_RELEASE_PRERELEASE="${expected_prerelease}" \
+              EXPECTED_RELEASE_TARGET="${RELEASE_COMMIT_SHA}" \
+              REQUIRED_DOC_AGENT_SOURCE_ID=memos-cloud-cli \
+              REQUIRE_EXISTING_RELEASE=false \
+              node .github/scripts/validate-github-release-inventory.mjs
+          )"
+          inventory_state="$(printf '%s' "${inventory_report}" | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk).on("end", () => process.stdout.write(JSON.parse(value).state));')"
+          npm_exists=false
+          if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+            npm_exists=true
+          fi
+          if [ "${npm_exists}" = "true" ]; then
+            npm_git_head="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" gitHead | tr -d '[:space:]"')"
+            if [ "${npm_git_head}" != "${RELEASE_COMMIT_SHA}" ] || [ "${tag_exists}" != "true" ] || [ "${inventory_state}" != "existing" ]; then
+              echo "::error::Existing npm release is not accompanied by an exact gitHead, tag, and GitHub Release. Automatic binary metadata reconstruction is disabled."
+              exit 1
+            fi
+            echo "Existing npm, tag, and GitHub Release form a complete idempotent release."
+          elif [ "${inventory_state}" = "existing" ]; then
+            echo "::error::GitHub Release ${RELEASE_TAG} exists while npm ${PACKAGE_NAME}@${RELEASE_VERSION} is absent; refusing an inconsistent release."
+            exit 1
           fi
 
       - name: Upload assets to OSS and verify each object
@@ -425,6 +520,10 @@ jobs:
           OSS_ACCESS_KEY_ID: ${{ secrets.OSS_ACCESS_KEY_ID }}
           OSS_ACCESS_KEY_SECRET: ${{ secrets.OSS_ACCESS_KEY_SECRET }}
           OSS_SESSION_TOKEN: ${{ secrets.OSS_SESSION_TOKEN }}
+          OSS_BUCKET: ${{ secrets.OSS_BUCKET }}
+          OSS_ENDPOINT: ${{ secrets.OSS_ENDPOINT }}
+          OSS_REGION: ${{ secrets.OSS_REGION }}
+          MEMOS_CLI_OSS_PUBLIC_BASE_URL: ${{ secrets.MEMOS_CLI_OSS_PUBLIC_BASE_URL }}
           DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
           DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
         run: |
@@ -432,7 +531,8 @@ jobs:
           python scripts/upload_release_assets.py \
             --version "${{ needs.metadata.outputs.version }}" \
             --assets-dir release-assets \
-            --output release-assets-manifest.json
+            --output release-assets-manifest.json \
+            --runtime-contract-output release-assets.json
 
       - name: Publish npm package with postcondition checks
         if: ${{ inputs.dry_run != true }}
@@ -440,6 +540,7 @@ jobs:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           GH_TOKEN: ${{ github.token }}
           MEMOS_INSTALL_SKIP_DOWNLOAD: "1"
+          MEMOS_RELEASE_REQUIRE_RESOLVED_ASSETS: "1"
           PACKAGE_NAME: "@memtensor/memos-cloud-cli"
           RELEASE_VERSION: ${{ needs.metadata.outputs.version }}
           RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
@@ -447,64 +548,54 @@ jobs:
           RECOVER_EXISTING_NPM_RELEASE: ${{ inputs.recover_existing_npm_release }}
           DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
           DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+          EXPECTED_RELEASE_COMMIT: ${{ needs.metadata.outputs.release_commit_sha }}
         shell: bash
         run: |
           set -euo pipefail
           npm install --ignore-scripts
+          already_published=false
           if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-            tag_exists=false
-            release_exists=false
-            if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
-              tag_exists=true
-            fi
-            if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-              release_exists=true
-            fi
-            if [ "${tag_exists}" = "true" ] && [ "${release_exists}" = "true" ]; then
-              echo "${PACKAGE_NAME}@${RELEASE_VERSION}, ${RELEASE_TAG}, and the GitHub Release already exist; publish is already complete."
-            elif [ "${RECOVER_EXISTING_NPM_RELEASE}" = "true" ]; then
-              echo "Recovery mode enabled; npm version exists, so publish is skipped and missing GitHub metadata may be reconstructed."
-            else
-              missing=()
-              if [ "${tag_exists}" != "true" ]; then
-                missing+=("${RELEASE_TAG}")
-              fi
-              if [ "${release_exists}" != "true" ]; then
-                missing+=("GitHub Release ${RELEASE_TAG}")
-              fi
-              printf -v missing_text "%s, " "${missing[@]}"
-              missing_text="${missing_text%, }"
-              echo "::error::${PACKAGE_NAME}@${RELEASE_VERSION} already exists on npm, but ${missing_text} is missing. Set recover_existing_npm_release=true only for an intentional metadata backfill."
-              exit 1
-            fi
-            exit 0
+            echo "${PACKAGE_NAME}@${RELEASE_VERSION} already exists and passed the earlier exact gitHead/tag/Release inventory reconciliation."
+            already_published=true
           fi
-          attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-npm-publish-attempts"
-          mkdir -p "${attempt_dir}"
-          for attempt in 1 2 3; do
-            set +e
-            npm publish --access public --tag "${NPM_DIST_TAG}" >"${attempt_dir}/${attempt}.log" 2>&1
-            publish_status=$?
-            set -e
-            sed -n '1,160p' "${attempt_dir}/${attempt}.log"
-            if [ "${publish_status}" = 0 ]; then
-              break
-            fi
-            if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
-              echo "Publish returned an error, but npm now contains the requested version."
-              break
-            fi
-            if [ "${attempt}" = 3 ]; then
-              RELEASE_FAILURE_PHASE=npm-publish \
-                RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
-                node .github/scripts/draft-cli-release-notes.mjs \
-                || echo "::warning::Failed to send the exhausted-retry notification."
-              echo "::error::npm publish failed after three attempts."
-              exit 1
-            fi
-            sleep "$((attempt * 5))"
-          done
+          if [ "${already_published}" != "true" ]; then
+            attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-npm-publish-attempts"
+            mkdir -p "${attempt_dir}"
+            for attempt in 1 2 3; do
+              set +e
+              npm publish --access public --tag "${NPM_DIST_TAG}" >"${attempt_dir}/${attempt}.log" 2>&1
+              publish_status=$?
+              set -e
+              sed -n '1,160p' "${attempt_dir}/${attempt}.log"
+              if [ "${publish_status}" = 0 ]; then
+                break
+              fi
+              if npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version >/dev/null 2>&1; then
+                echo "Publish returned an error, but npm now contains the requested version."
+                break
+              fi
+              if [ "${attempt}" = 3 ]; then
+                RELEASE_FAILURE_PHASE=npm-publish \
+                  RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                  node .github/scripts/draft-cli-release-notes.mjs \
+                  || echo "::warning::Failed to send the exhausted-retry notification."
+                echo "::error::npm publish failed after three attempts."
+                exit 1
+              fi
+              sleep "$((attempt * 5))"
+            done
+          fi
           npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" version
+          npm_git_head="$(npm view "${PACKAGE_NAME}@${RELEASE_VERSION}" gitHead | tr -d '[:space:]"')"
+          if [ "${npm_git_head}" != "${EXPECTED_RELEASE_COMMIT}" ]; then
+            echo "::error::npm records gitHead ${npm_git_head:-missing}, expected durable release commit ${EXPECTED_RELEASE_COMMIT}."
+            exit 1
+          fi
+          dist_tag_version="$(npm view "${PACKAGE_NAME}" "dist-tags.${NPM_DIST_TAG}" | tr -d '[:space:]"')"
+          if [ "${dist_tag_version}" != "${RELEASE_VERSION}" ]; then
+            echo "::error::npm dist-tag ${NPM_DIST_TAG} points to ${dist_tag_version:-missing}, expected ${RELEASE_VERSION}."
+            exit 1
+          fi
 
       - name: Create immutable tag, GitHub Release, and version PR
         if: ${{ inputs.dry_run != true }}
@@ -515,6 +606,11 @@ jobs:
           RELEASE_TAG: ${{ needs.metadata.outputs.tag_name }}
           RELEASE_TITLE: ${{ needs.metadata.outputs.release_title }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_COMMIT_SHA: ${{ needs.metadata.outputs.release_commit_sha }}
+          RELEASE_BRANCH: ${{ needs.metadata.outputs.release_branch }}
+          CREATED_RELEASE_COMMIT: ${{ needs.metadata.outputs.created_release_commit }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
         shell: bash
         run: |
           set -euo pipefail
@@ -523,66 +619,151 @@ jobs:
             exit 1
           fi
 
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add package.json pyproject.toml src/memos_cli/__init__.py
-          created_release_commit=false
-          if ! git diff --staged --quiet; then
-            git commit -m "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}"
-            created_release_commit=true
-          fi
-
-          release_branch="release/memos-cloud-cli-${RELEASE_TAG}"
-          if [ "${created_release_commit}" = "true" ]; then
-            remote_branch_sha="$(git ls-remote --heads origin "${release_branch}" | awk '{print $1}')"
-            if [ -n "${remote_branch_sha}" ] && [ "${remote_branch_sha}" != "$(git rev-parse HEAD)" ]; then
-              echo "::error::${release_branch} exists at a different commit; refusing to overwrite it."
-              exit 1
-            elif [ -z "${remote_branch_sha}" ]; then
-              git push origin "HEAD:refs/heads/${release_branch}"
-            fi
-          fi
-
           if git ls-remote --exit-code --tags origin "refs/tags/${RELEASE_TAG}" >/dev/null 2>&1; then
             git fetch --force origin "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
-            tagged_version="$(git show "${RELEASE_TAG}:package.json" | node -e 'let data=""; process.stdin.on("data", chunk => data += chunk).on("end", () => console.log(JSON.parse(data).version))')"
-            if [ "${tagged_version}" != "${RELEASE_VERSION}" ]; then
-              echo "::error::Tag ${RELEASE_TAG} contains package version ${tagged_version}, expected ${RELEASE_VERSION}; refusing to move it."
+            tag_commit_sha="$(git rev-parse "${RELEASE_TAG}^{commit}")"
+            if [ "${tag_commit_sha}" != "${RELEASE_COMMIT_SHA}" ]; then
+              echo "::error::Tag ${RELEASE_TAG} targets ${tag_commit_sha}, expected immutable release commit ${RELEASE_COMMIT_SHA}; refusing to move it."
               exit 1
             fi
-            echo "Tag ${RELEASE_TAG} already exists with the expected package version; leaving it unchanged."
+            echo "Tag ${RELEASE_TAG} already targets ${RELEASE_COMMIT_SHA}; leaving it unchanged."
           else
-            git tag "${RELEASE_TAG}"
-            git push origin "refs/tags/${RELEASE_TAG}"
+            git config user.name "github-actions[bot]"
+            git config user.email "github-actions[bot]@users.noreply.github.com"
+            git tag -a "${RELEASE_TAG}" "${RELEASE_COMMIT_SHA}" -m "${RELEASE_TITLE}"
+            attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-tag-push-attempts"
+            mkdir -p "${attempt_dir}"
+            for attempt in 1 2 3; do
+              set +e
+              git push origin "refs/tags/${RELEASE_TAG}" >"${attempt_dir}/${attempt}.log" 2>&1
+              push_status=$?
+              set -e
+              sed -n '1,120p' "${attempt_dir}/${attempt}.log"
+              if [ "${push_status}" = 0 ]; then
+                break
+              fi
+              remote_tag_sha="$(git ls-remote --tags origin "refs/tags/${RELEASE_TAG}^{}" | awk '{print $1}')"
+              if [ "${remote_tag_sha}" = "${RELEASE_COMMIT_SHA}" ]; then
+                echo "Tag push returned an error, but the remote annotated tag now targets the expected commit."
+                break
+              fi
+              if [ "${attempt}" = 3 ]; then
+                RELEASE_FAILURE_PHASE=github-release-tag-push \
+                  RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                  node .github/scripts/draft-cli-release-notes.mjs \
+                  || echo "::warning::Failed to send exhausted tag-push evidence."
+                echo "::error::Failed to push immutable tag after three attempts."
+                exit 1
+              fi
+              sleep "$((attempt * 5))"
+            done
           fi
 
+          expected_prerelease=false
           release_flags=()
           if [[ "${RELEASE_VERSION}" == *-* || "${NPM_DIST_TAG}" != "latest" ]]; then
+            expected_prerelease=true
             release_flags+=(--prerelease)
             echo "Marking GitHub Release ${RELEASE_TAG} as prerelease because version=${RELEASE_VERSION}, npm_dist_tag=${NPM_DIST_TAG}."
           fi
 
-          if gh release view "${RELEASE_TAG}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "GitHub Release ${RELEASE_TAG} already exists."
-          else
+          inventory_dir="${RUNNER_TEMP}/memos-cloud-cli-release-inventory"
+          mkdir -p "${inventory_dir}"
+          fetch_inventory() {
+            gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/releases?per_page=100" > "${inventory_dir}/releases.json"
+          }
+          inspect_inventory() {
+            local require_existing="$1"
+            RELEASE_INVENTORY_FILE="${inventory_dir}/releases.json" \
+              RELEASE_TAG="${RELEASE_TAG}" \
+              EXPECTED_RELEASE_DRAFT=false \
+              EXPECTED_RELEASE_PRERELEASE="${expected_prerelease}" \
+              EXPECTED_RELEASE_TARGET="${RELEASE_COMMIT_SHA}" \
+              REQUIRED_DOC_AGENT_SOURCE_ID=memos-cloud-cli \
+              REQUIRE_EXISTING_RELEASE="${require_existing}" \
+              node .github/scripts/validate-github-release-inventory.mjs
+          }
+
+          fetch_inventory
+          inventory_report="$(inspect_inventory false)"
+          inventory_state="$(printf '%s' "${inventory_report}" | node -e 'let value=""; process.stdin.on("data", chunk => value += chunk).on("end", () => process.stdout.write(JSON.parse(value).state));')"
+          if [ "${inventory_state}" = "absent" ]; then
+            create_log="${inventory_dir}/create.log"
+            set +e
             gh release create "${RELEASE_TAG}" \
               --repo "${GITHUB_REPOSITORY}" \
-              --target "$(git rev-parse HEAD)" \
+              --verify-tag \
+              --target "${RELEASE_COMMIT_SHA}" \
               --title "${RELEASE_TITLE}" \
               --notes-file release-metadata/release-notes.md \
               "${release_flags[@]}" \
-              release-assets/*.tar.gz
+              release-assets/*.tar.gz >"${create_log}" 2>&1
+            create_status=$?
+            set -e
+            sed -n '1,160p' "${create_log}"
+            if [ "${create_status}" != "0" ]; then
+              echo "::warning::GitHub Release create returned an error; reconciling inventory before deciding whether it failed."
+            fi
+            verified=false
+            for attempt in 1 2 3; do
+              fetch_inventory
+              if inspect_inventory true; then
+                verified=true
+                break
+              fi
+              sleep "$((attempt * 5))"
+            done
+            if [ "${verified}" != "true" ]; then
+              attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-release-create-attempts"
+              mkdir -p "${attempt_dir}"
+              for attempt in 1 2 3; do cp "${create_log}" "${attempt_dir}/${attempt}.log"; done
+              RELEASE_FAILURE_PHASE=github-release-create \
+                RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                node .github/scripts/draft-cli-release-notes.mjs \
+                || echo "::warning::Failed to send exhausted GitHub Release evidence."
+              echo "::error::GitHub Release was not visible with the expected target and source id. Refusing to issue a second create request."
+              exit 1
+            fi
+          else
+            echo "GitHub Release ${RELEASE_TAG} already exists with the exact expected metadata."
           fi
 
-          if [ "${created_release_commit}" != "true" ]; then
+          if [ "${CREATED_RELEASE_COMMIT}" != "true" ]; then
             echo "No version changes require a PR."
-          elif gh pr view "${release_branch}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
-            echo "Version PR already exists for ${release_branch}."
           else
-            gh pr create \
-              --repo "${GITHUB_REPOSITORY}" \
-              --base "${DEFAULT_BRANCH}" \
-              --head "${release_branch}" \
-              --title "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}" \
-              --body "Synchronizes package.json, pyproject.toml, and src/memos_cli/__init__.py for the published CLI release."
+            existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${RELEASE_BRANCH}" --state open --json url --jq '.[0].url // ""')"
+            if [ -n "${existing_pr}" ]; then
+              echo "Version PR already exists: ${existing_pr}"
+            else
+              attempt_dir="${RUNNER_TEMP}/memos-cloud-cli-pr-create-attempts"
+              mkdir -p "${attempt_dir}"
+              created_pr=false
+              for attempt in 1 2 3; do
+                set +e
+                gh pr create \
+                  --repo "${GITHUB_REPOSITORY}" \
+                  --base "${DEFAULT_BRANCH}" \
+                  --head "${RELEASE_BRANCH}" \
+                  --title "release: @memtensor/memos-cloud-cli v${RELEASE_VERSION}" \
+                  --body "Synchronizes package.json, pyproject.toml, and src/memos_cli/__init__.py for the published CLI release." \
+                  >"${attempt_dir}/${attempt}.log" 2>&1
+                pr_status=$?
+                set -e
+                sed -n '1,120p' "${attempt_dir}/${attempt}.log"
+                existing_pr="$(gh pr list --repo "${GITHUB_REPOSITORY}" --head "${RELEASE_BRANCH}" --state open --json url --jq '.[0].url // ""')"
+                if [ "${pr_status}" = "0" ] || [ -n "${existing_pr}" ]; then
+                  created_pr=true
+                  break
+                fi
+                sleep "$((attempt * 5))"
+              done
+              if [ "${created_pr}" != "true" ]; then
+                RELEASE_FAILURE_PHASE=github-release-pr-create \
+                  RELEASE_FAILURE_ATTEMPT_DIR="${attempt_dir}" \
+                  node .github/scripts/draft-cli-release-notes.mjs \
+                  || echo "::warning::Failed to send exhausted PR-create evidence."
+                echo "::error::Failed to create release PR automatically after three attempts."
+                exit 1
+              fi
+            fi
           fi

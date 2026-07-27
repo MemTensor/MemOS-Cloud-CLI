@@ -1,0 +1,304 @@
+name: MemOS CLI - Reusable Release Dry Run
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        description: "Version to inspect (for example 1.0.7 or 1.0.7-beta.1)."
+        required: true
+        type: string
+      tag:
+        description: "npm dist-tag paired with the inspected version."
+        required: false
+        type: string
+        default: "latest"
+      git_ref:
+        description: "Git ref containing the workflow and CLI source."
+        required: false
+        type: string
+        default: ""
+      release_notes:
+        description: "Optional evidence-backed Markdown. Leave blank to request a Doc Agent draft."
+        required: false
+        type: string
+        default: ""
+      baseline_ref:
+        description: "Migration-only previous ref used until the first real CLI baseline tag exists."
+        required: false
+        type: string
+        default: ""
+      artifact_name:
+        description: "Inspection artifact name."
+        required: false
+        type: string
+        default: "memos-cloud-cli-release-inspection"
+    secrets:
+      DOC_AGENT_RELEASE_NOTES_DRAFT_URL:
+        description: "Doc Agent release-note draft endpoint."
+        required: false
+      DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN:
+        description: "Bearer token for the Doc Agent draft endpoint."
+        required: false
+      DOC_AGENT_RELEASE_FAILURE_URL:
+        description: "Optional exhausted-failure reporting endpoint."
+        required: false
+
+permissions:
+  contents: read
+
+jobs:
+  metadata:
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    outputs:
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Validate immutable dry-run inputs
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          NPM_DIST_TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if [[ "${RELEASE_VERSION}" == [vV]* ]]; then
+            echo "::error::version must not include a leading v."
+            exit 1
+          fi
+          if ! [[ "${RELEASE_VERSION}" =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?(\+[0-9A-Za-z-]+(\.[0-9A-Za-z-]+)*)?$ ]]; then
+            echo "::error::version must be a valid SemVer value."
+            exit 1
+          fi
+          if ! [[ "${NPM_DIST_TAG}" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]]; then
+            echo "::error::tag must be a valid npm dist-tag."
+            exit 1
+          fi
+          if [[ "${RELEASE_VERSION}" == *-* ]] && [ "${NPM_DIST_TAG}" = "latest" ]; then
+            echo "::error::Prerelease versions cannot use the latest npm dist-tag."
+            exit 1
+          fi
+          if [[ "${RELEASE_VERSION}" != *-* ]] && [ "${NPM_DIST_TAG}" != "latest" ]; then
+            echo "::error::Stable versions must use the latest npm dist-tag."
+            exit 1
+          fi
+
+      - name: Synchronize and verify every version source
+        id: metadata
+        shell: bash
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: |
+          set -euo pipefail
+          node scripts/sync-version.js "${RELEASE_VERSION}"
+          node scripts/sync-version.js "${RELEASE_VERSION}" --check
+          echo "version=${RELEASE_VERSION}" >> "${GITHUB_OUTPUT}"
+
+      - name: Run release, installer, and Python tests
+        env:
+          MEMOS_INSTALL_SKIP_DOWNLOAD: "1"
+        run: |
+          set -euo pipefail
+          npm install --ignore-scripts
+          npm test
+          node --test .github/scripts/*.test.mjs
+          python -m pip install -e .
+          python -m unittest discover -s tests -p 'test_*.py'
+          python -m unittest discover -s scripts -p '*test*.py'
+          npm pack --dry-run --json > "${RUNNER_TEMP}/memos-cloud-cli-pack.json"
+
+      - name: Draft and validate evidence-backed Release notes
+        id: release_notes
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_TAG: v${{ inputs.version }}
+          RELEASE_PREVIOUS_REF: ${{ inputs.baseline_ref || vars.MEMOS_CLOUD_CLI_RELEASE_BASELINE_REF }}
+          MANUAL_RELEASE_NOTES: ${{ inputs.release_notes }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_URL: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_URL }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+        run: node .github/scripts/draft-cli-release-notes.mjs
+
+      - name: Prepare metadata inspection
+        if: ${{ always() }}
+        shell: bash
+        env:
+          DRAFT_STEP_OUTCOME: ${{ steps.release_notes.outcome }}
+          RELEASE_VERSION: ${{ inputs.version }}
+          RELEASE_NOTES_FILE: ${{ steps.release_notes.outputs.release_notes_file }}
+          EVIDENCE_FILE: ${{ steps.release_notes.outputs.evidence_file }}
+          DRAFT_FILE: ${{ steps.release_notes.outputs.draft_file }}
+          DOCS_PREVIEW_FILE: ${{ steps.release_notes.outputs.docs_preview_file }}
+          DOCS_PREVIEW_MARKDOWN_FILE: ${{ steps.release_notes.outputs.docs_preview_markdown_file }}
+          QUALITY_REPORT_FILE: ${{ steps.release_notes.outputs.quality_report_file }}
+          DRAFT_USED: ${{ steps.release_notes.outputs.draft_used }}
+          PREVIOUS_REF: ${{ steps.release_notes.outputs.previous_tag }}
+          VALIDATION_ATTEMPT_COUNT: ${{ steps.release_notes.outputs.validation_attempt_count }}
+          REPAIR_ATTEMPT_COUNT: ${{ steps.release_notes.outputs.repair_attempt_count }}
+        run: |
+          set -euo pipefail
+          inspection_dir="${RUNNER_TEMP}/memos-cloud-cli-release-metadata"
+          mkdir -p "${inspection_dir}"
+          copy_if_present() {
+            local source_file="$1"
+            local target_name="$2"
+            if [ -n "${source_file}" ] && [ -s "${source_file}" ]; then
+              cp "${source_file}" "${inspection_dir}/${target_name}"
+            fi
+          }
+          copy_if_present "${RELEASE_NOTES_FILE}" "release-notes.md"
+          copy_if_present "${EVIDENCE_FILE}" "evidence.json"
+          copy_if_present "${DRAFT_FILE}" "release-notes-draft.json"
+          copy_if_present "${DOCS_PREVIEW_FILE}" "docs-preview.json"
+          copy_if_present "${DOCS_PREVIEW_MARKDOWN_FILE}" "docs-preview.md"
+          copy_if_present "${QUALITY_REPORT_FILE}" "quality-report.json"
+          copy_if_present "${RUNNER_TEMP}/memos-cloud-cli-pack.json" "npm-pack.json"
+          cp package.json pyproject.toml src/memos_cli/__init__.py "${inspection_dir}/"
+
+          if [ "${DRAFT_STEP_OUTCOME}" = "success" ] && [ ! -s "${inspection_dir}/release-notes.md" ]; then
+            echo "::error::release-notes.md was not generated."
+            exit 1
+          fi
+          if [ "${DRAFT_STEP_OUTCOME}" = "success" ] && [ ! -s "${inspection_dir}/quality-report.json" ]; then
+            echo "::error::quality-report.json was not generated."
+            exit 1
+          fi
+
+          {
+            echo "# MemOS CLI read-only release inspection"
+            echo
+            echo "- draft_step_outcome: ${DRAFT_STEP_OUTCOME}"
+            echo "- version: ${RELEASE_VERSION}"
+            echo "- draft_used: ${DRAFT_USED:-unknown}"
+            echo "- previous_ref: ${PREVIOUS_REF:-n/a}"
+            echo "- validation_attempt_count: ${VALIDATION_ATTEMPT_COUNT:-n/a}"
+            echo "- repair_attempt_count: ${REPAIR_ATTEMPT_COUNT:-n/a}"
+            echo "- token_permissions: contents:read"
+            echo "- repository_credentials_persisted: false"
+            echo "- external_writes: none"
+          } > "${inspection_dir}/README.md"
+
+      - name: Upload metadata inspection
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: memos-cloud-cli-release-metadata
+          path: ${{ runner.temp }}/memos-cloud-cli-release-metadata
+          if-no-files-found: error
+
+  build:
+    needs: metadata
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-14
+            target: darwin-arm64
+            script: bash scripts/build-binary.sh
+          - os: macos-15-intel
+            target: darwin-x64
+            script: bash scripts/build-binary.sh
+          - os: ubuntu-22.04
+            target: linux-x64
+            script: bash scripts/build-binary.sh
+          - os: windows-2022
+            target: windows-x64
+            script: pwsh -File scripts/build-binary.ps1
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+
+      - name: Synchronize version and build native archive
+        run: |
+          node scripts/sync-version.js "${{ needs.metadata.outputs.version }}"
+          ${{ matrix.script }}
+
+      - name: Verify target archive
+        shell: bash
+        run: test -s "dist/memos-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: cli-${{ matrix.target }}
+          path: dist/memos-${{ needs.metadata.outputs.version }}-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+
+  assemble:
+    needs: [metadata, build]
+    permissions:
+      contents: read
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.git_ref || github.ref }}
+          persist-credentials: false
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: cli-*
+          path: release-assets
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: memos-cloud-cli-release-metadata
+          path: inspection
+
+      - name: Validate complete asset matrix and append the manifest
+        run: |
+          python scripts/upload_release_assets.py \
+            --version "${{ needs.metadata.outputs.version }}" \
+            --assets-dir release-assets \
+            --output inspection/release-assets-manifest.json \
+            --dry-run
+
+      - name: Confirm read-only inspection contract
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in release-notes.md evidence.json quality-report.json docs-preview.md docs-preview.json release-assets-manifest.json npm-pack.json; do
+            test -s "inspection/${file}"
+          done
+          {
+            echo
+            echo "Validated assets:"
+            echo "- darwin-arm64"
+            echo "- darwin-x64"
+            echo "- linux-x64"
+            echo "- windows-x64"
+          } >> inspection/README.md
+
+      - name: Upload complete release inspection
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: inspection
+          if-no-files-found: error

@@ -1,0 +1,35 @@
+name: MemOS CLI - Post-Merge Release Dry Run
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/release.yml"
+      - ".github/workflows/release-dry-run.yml"
+      - ".github/workflows/pre-merge-release-dry-run.yml"
+      - ".github/workflows/post-merge-release-dry-run.yml"
+      - ".github/scripts/**"
+      - "scripts/**"
+      - "package.json"
+      - "release-assets.json"
+
+permissions:
+  contents: read
+
+jobs:
+  inspect:
+    if: ${{ github.repository == 'MemTensor/MemOS-Cloud-CLI' }}
+    permissions:
+      contents: read
+    uses: ./.github/workflows/release-dry-run.yml
+    with:
+      version: "1.0.7"
+      tag: "latest"
+      baseline_ref: "c18ced5"
+      artifact_name: "memos-cloud-cli-post-merge-release-inspection"
+      release_notes: ""
+    secrets:
+      DOC_AGENT_RELEASE_NOTES_DRAFT_URL: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_URL }}
+      DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+      DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
