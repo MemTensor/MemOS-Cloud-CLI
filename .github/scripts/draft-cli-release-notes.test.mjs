@@ -9,7 +9,9 @@ import {
   compareSemver,
   docsPreviewFromDraft,
   ensureSourceHint,
+  manualDraftFromEvidence,
   postprocessDraftFromEvidence,
+  qualityReportFromDraft,
   reportExternalFailureFromEnv,
   requestDraft,
   requestValidatedDraft,
@@ -48,6 +50,49 @@ test("CLI manual notes cannot bypass language or source-ref validation", () => {
   assert.throws(() => validateManualNotes(invalidRefNotes), /invalid categories, text, or source_refs/);
 });
 
+test("CLI manual notes cannot bypass docs readability validation", () => {
+  const longNotes = `## Changelog\n\n### Improved\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Improved","text_cn":"**CLI 安装器优化**：${"用于发布说明质量验证的重复中文描述。".repeat(12)}","text_en":"**CLI installer improvements**: ${"This repeated English detail is intentionally too verbose for a changelog bullet. ".repeat(6)}","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`;
+  assert.throws(() => validateManualNotes(longNotes), /concise enough/);
+});
+
+test("CLI manual notes are reconciled against real git evidence", () => {
+  const validNotes = `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Added","text_cn":"新增命令","text_en":"Added command","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`;
+  const validDraft = manualDraftFromEvidence(cliEvidence, validNotes);
+  assert.equal(validDraft.ok, true);
+  assert.equal(validDraft.coverage.missing_required_count, 0);
+  assert.equal(validDraft.coverage.invalid_source_refs.length, 0);
+  assert.equal(validDraft.validation_attempt_count, 1);
+  assert.equal(validDraft.repair_attempt_count, 0);
+
+  const inventedRefNotes = validNotes.replaceAll("abc1234", "deadbee");
+  const invalidDraft = manualDraftFromEvidence(cliEvidence, inventedRefNotes);
+  assert.equal(invalidDraft.ok, false);
+  assert.deepEqual(invalidDraft.coverage.invalid_source_refs, ["deadbee"]);
+  assert.equal(invalidDraft.coverage.missing_required_count, 1);
+});
+
+test("CLI quality report is compact, inspectable, and fail-closed", () => {
+  const draft = manualDraftFromEvidence(
+    cliEvidence,
+    `## Changelog\n\n### Added\n- command\n\n<!-- doc-agent-release-notes-json\n{"items":[{"category":"Added","text_cn":"新增命令","text_en":"Added command","source_refs":["abc1234"]}],"coverage":{"needs_review":false}}\n-->`,
+  );
+  const report = qualityReportFromDraft(draft, {
+    targetVersion: "1.0.7",
+    previousRef: "v1.0.6",
+    currentTag: "v1.0.7",
+    currentRef: "abc1234",
+    draftUsed: false,
+  });
+  assert.equal(report.schema, "memos.plugin.release_notes.quality_report.v1");
+  assert.equal(report.ok, true);
+  assert.equal(report.needs_review, false);
+  assert.equal(report.item_count, 1);
+  assert.equal(report.missing_required_count, 0);
+  assert.equal(report.limits.max_items, 12);
+  assert.equal(report.limits.max_repair_attempts, 3);
+  assert.equal(report.draft_used, false);
+});
+
 test("CLI requests multi-candidate release-note quality from the draft service", () => {
   assert.equal(RELEASE_NOTE_QUALITY_REQUEST.candidate_count, 3);
   assert.match(RELEASE_NOTE_QUALITY_REQUEST.selection_policy.join("\n"), /source_ref validity/);
@@ -73,6 +118,48 @@ test("CLI postprocess rejects mixed-language output and missing important refs",
   assert.deepEqual(draft.coverage.invalid_source_refs, ["deadbee"]);
   assert.equal(draft.coverage.missing_required_count, 1);
   assert.equal(draft.language_issues.length, 1);
+});
+
+test("CLI postprocess rejects docs output that is too fragmented", () => {
+  const noisyItems = Array.from({ length: 13 }, (_item, index) => ({
+    category: "Improved",
+    text_cn: `**CLI 优化 ${index + 1}**：优化发布说明展示效果。`,
+    text_en: `**CLI improvement ${index + 1}**: Refined release-note presentation.`,
+    source_refs: ["abc1234"],
+  }));
+  const draft = postprocessDraftFromEvidence(cliEvidence, {
+    ok: true,
+    needs_review: false,
+    coverage: { needs_review: false },
+    release_items: noisyItems,
+  });
+
+  assert.equal(draft.ok, false);
+  assert.equal(draft.needs_review, true);
+  assert.ok(draft.readability_issues.some((issue) => issue.field === "release_items"));
+  assert.ok(draft.validation_report.issues.some((issue) => issue.field === "release_items"));
+});
+
+test("CLI postprocess rejects docs bullets that are too long", () => {
+  const draft = postprocessDraftFromEvidence(cliEvidence, {
+    ok: true,
+    needs_review: false,
+    coverage: { needs_review: false },
+    release_items: [
+      {
+        category: "Improved",
+        text_cn: `**CLI 安装器优化**：${"用于发布说明质量验证的重复中文描述。".repeat(12)}`,
+        text_en: `**CLI installer improvements**: ${"This repeated English detail is intentionally too verbose for a changelog bullet. ".repeat(6)}`,
+        source_refs: ["abc1234"],
+      },
+    ],
+  });
+
+  assert.equal(draft.ok, false);
+  assert.equal(draft.needs_review, true);
+  assert.ok(draft.readability_issues.some((issue) => issue.field === "text_cn"));
+  assert.ok(draft.readability_issues.some((issue) => issue.field === "text_en"));
+  assert.ok(draft.validation_report.issues.some((issue) => issue.field === "text_en"));
 });
 
 test("CLI repairs structured needs-review drafts with validation context", async () => {

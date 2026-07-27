@@ -18,7 +18,17 @@ const RELEASE_TO_DOC_CATEGORY = {
 };
 const RELEASE_ASSET_TARGETS = ["darwin-arm64", "darwin-x64", "linux-x64", "windows-x64"];
 const MAX_DRAFT_REPAIR_ATTEMPTS = 3;
+const MAX_RELEASE_ITEMS = 12;
+const MAX_TEXT_CN_CHARS = 180;
+const MAX_TEXT_EN_CHARS = 220;
 const CJK_RE = /[\u3400-\u9fff\uf900-\ufaff]/;
+
+export const RELEASE_NOTE_LIMITS = {
+  max_items: MAX_RELEASE_ITEMS,
+  max_text_cn_chars: MAX_TEXT_CN_CHARS,
+  max_text_en_chars: MAX_TEXT_EN_CHARS,
+  max_repair_attempts: MAX_DRAFT_REPAIR_ATTEMPTS,
+};
 
 export const RELEASE_NOTE_QUALITY_REQUEST = {
   schema: "memos.plugin.release_notes.quality_request.v1",
@@ -371,6 +381,7 @@ export function draftForInspection(draft) {
     warnings: Array.isArray(draft?.warnings) ? draft.warnings : [],
     docs_categories: draft?.docs_categories || { cn: {}, en: {} },
     language_issues: Array.isArray(draft?.language_issues) ? draft.language_issues : [],
+    readability_issues: Array.isArray(draft?.readability_issues) ? draft.readability_issues : [],
     postprocess: draft?.postprocess || {},
     validation_report: draft?.validation_report || {},
     validation_attempt_count: Number(draft?.validation_attempt_count || 0),
@@ -455,6 +466,39 @@ function languageIssuesFromReleaseItems(items) {
   return issues;
 }
 
+function readabilityIssuesFromReleaseItems(items) {
+  const issues = [];
+  if (items.length > MAX_RELEASE_ITEMS) {
+    issues.push({
+      field: "release_items",
+      item_count: items.length,
+      max_item_count: MAX_RELEASE_ITEMS,
+      issue: "Plugin changelog output must be grouped into concise product-facing bullets.",
+    });
+  }
+  items.forEach((item, index) => {
+    if (item.text_cn && item.text_cn.length > MAX_TEXT_CN_CHARS) {
+      issues.push({
+        index,
+        field: "text_cn",
+        current_length: item.text_cn.length,
+        max_length: MAX_TEXT_CN_CHARS,
+        issue: "Chinese release-note text is too long for the Plugin tab.",
+      });
+    }
+    if (item.text_en && item.text_en.length > MAX_TEXT_EN_CHARS) {
+      issues.push({
+        index,
+        field: "text_en",
+        current_length: item.text_en.length,
+        max_length: MAX_TEXT_EN_CHARS,
+        issue: "English release-note text is too long for the Plugin tab.",
+      });
+    }
+  });
+  return issues;
+}
+
 function categoriesFromReleaseItems(items) {
   const releaseCategories = {};
   const docsCategories = { cn: {}, en: {} };
@@ -511,17 +555,20 @@ export function postprocessDraftFromEvidence(evidence, draft) {
   const rawItems = Array.isArray(draft?.release_items) ? draft.release_items : Array.isArray(draft?.items) ? draft.items : [];
   const items = rawItems.map(normalizeReleaseItem).filter(Boolean);
   const languageIssues = languageIssuesFromReleaseItems(items);
+  const readabilityIssues = readabilityIssuesFromReleaseItems(items);
   const coverage = coverageFromReleaseItems(evidence, draft, items);
-  if (languageIssues.length > 0 || items.length === 0) coverage.needs_review = true;
+  if (languageIssues.length > 0 || readabilityIssues.length > 0 || items.length === 0) coverage.needs_review = true;
   const { releaseCategories, docsCategories } = categoriesFromReleaseItems(items);
   const validationIssues = [
     ...(items.length ? [] : [{ issue: "release_items is empty after normalization" }]),
     ...languageIssues,
+    ...readabilityIssues,
     ...(coverage.invalid_source_refs || []).map((ref) => ({ field: "source_refs", source_ref: ref, issue: "source_ref is not present in git evidence" })),
     ...(coverage.missing_required_refs || []).map((item) => ({ field: "coverage", source_ref: item.source_ref, subject: item.subject, issue: "important commit is not covered by any release note item" })),
   ];
   const warnings = Array.isArray(draft?.warnings) ? [...draft.warnings] : [];
   if (validationIssues.length > 0) warnings.push("release notes failed local validation and require repair before publishing");
+  if (readabilityIssues.length > 0) warnings.push("release notes readability validation failed; the Plugin tab draft must be repaired before publishing");
   return {
     ...draft,
     ok: items.length > 0 && !coverage.needs_review,
@@ -532,9 +579,12 @@ export function postprocessDraftFromEvidence(evidence, draft) {
     coverage,
     warnings,
     language_issues: languageIssues,
+    readability_issues: readabilityIssues,
     validation_report: {
       ok: validationIssues.length === 0,
       issue_count: validationIssues.length,
+      language_issue_count: languageIssues.length,
+      readability_issue_count: readabilityIssues.length,
       issues: validationIssues,
     },
     release_notes_markdown: markdownFromReleaseItems(items, coverage),
@@ -630,26 +680,104 @@ function ensureMachineReadablePayload(notes, draft) {
 export function validateManualNotes(notes) {
   const text = String(notes || "").trim();
   if (!/^## Changelog\s*$/m.test(text)) fail("Manual release notes require a ## Changelog heading.");
-  const match = text.match(new RegExp(`<!--\\s*${RELEASE_NOTES_MARKER}\\s*\\n([\\s\\S]*?)\\n-->`));
-  if (!match) fail("Manual release notes require the doc-agent-release-notes-json evidence block.");
-  let payload;
-  try {
-    payload = JSON.parse(match[1]);
-  } catch {
-    fail("Manual release-note evidence JSON is invalid.");
-  }
+  const payload = manualPayloadFromNotes(text);
   if (!Array.isArray(payload?.items) || payload.items.length === 0 || payload?.coverage?.needs_review !== false) {
     fail("Manual release-note evidence must have non-empty items and passed coverage.");
   }
   const items = payload.items.map(normalizeReleaseItem).filter(Boolean);
   const languageIssues = languageIssuesFromReleaseItems(items);
+  const readabilityIssues = readabilityIssuesFromReleaseItems(items);
   if (items.length !== payload.items.length) {
     fail("Manual release-note evidence has invalid categories, text, or source_refs.");
   }
   if (languageIssues.length > 0) {
     fail("Manual release-note evidence must keep Chinese text in text_cn and English text in text_en.");
   }
+  if (readabilityIssues.length > 0) {
+    fail("Manual release-note items must stay concise enough for the Plugin tab preview.");
+  }
   return text;
+}
+
+function manualPayloadFromNotes(notes) {
+  const match = String(notes || "").match(new RegExp(`<!--\\s*${RELEASE_NOTES_MARKER}\\s*\\n([\\s\\S]*?)\\n-->`));
+  if (!match) fail("Manual release notes require the doc-agent-release-notes-json evidence block.");
+  try {
+    return JSON.parse(match[1]);
+  } catch {
+    fail("Manual release-note evidence JSON is invalid.");
+  }
+}
+
+export function manualDraftFromEvidence(evidence, notes) {
+  const validNotes = ensureSourceHint(validateManualNotes(notes));
+  const payload = manualPayloadFromNotes(validNotes);
+  const draft = postprocessDraftFromEvidence(evidence, {
+    ok: true,
+    needs_review: false,
+    confidence: "manual",
+    release_items: payload.items,
+    coverage: payload.coverage,
+    warnings: [],
+  });
+  return {
+    ...draft,
+    confidence: "manual",
+    validation_attempt_count: 1,
+    repair_attempt_count: 0,
+    repair_attempts: [
+      {
+        stage: "manual",
+        attempt: 1,
+        ok: draft.ok,
+        needs_review: draft.needs_review,
+        validation_report: draft.validation_report,
+      },
+    ],
+    postprocess: {
+      applied: true,
+      source: "manual_release_notes",
+      final_item_count: draft.release_items.length,
+    },
+    release_notes_markdown: validNotes,
+  };
+}
+
+export function qualityReportFromDraft(
+  draft,
+  { targetVersion = "", previousRef = "", currentTag = "", currentRef = "HEAD", draftUsed = true } = {},
+) {
+  const validation = draft?.validation_report || {};
+  const coverage = draft?.coverage || {};
+  const issues = Array.isArray(validation.issues) ? validation.issues : [];
+  const languageIssues = Array.isArray(draft?.language_issues) ? draft.language_issues : [];
+  const readabilityIssues = Array.isArray(draft?.readability_issues) ? draft.readability_issues : [];
+  const invalidRefs = Array.isArray(coverage.invalid_source_refs) ? coverage.invalid_source_refs : [];
+  const missingRequired = Array.isArray(coverage.missing_required_refs) ? coverage.missing_required_refs : [];
+  return {
+    schema: "memos.plugin.release_notes.quality_report.v1",
+    product_id: PRODUCT_ID,
+    repo: REPOSITORY,
+    target_version: targetVersion ? `v${cleanVersion(targetVersion)}` : "",
+    previous_ref: previousRef,
+    current_tag: currentTag,
+    current_ref: currentRef,
+    draft_used: Boolean(draftUsed),
+    ok: Boolean(draft?.ok) && !draft?.needs_review && validation.ok !== false,
+    needs_review: Boolean(draft?.needs_review) || validation.ok === false,
+    limits: RELEASE_NOTE_LIMITS,
+    item_count: Array.isArray(draft?.release_items) ? draft.release_items.length : 0,
+    issue_count: Number(validation.issue_count ?? issues.length),
+    language_issue_count: Number(validation.language_issue_count ?? languageIssues.length),
+    readability_issue_count: Number(validation.readability_issue_count ?? readabilityIssues.length),
+    invalid_source_ref_count: invalidRefs.length,
+    missing_required_count: Number(coverage.missing_required_count ?? missingRequired.length),
+    coverage,
+    issues,
+    validation_attempt_count: Number(draft?.validation_attempt_count || 0),
+    repair_attempt_count: Number(draft?.repair_attempt_count || 0),
+    attempts: Array.isArray(draft?.repair_attempts) ? draft.repair_attempts : [],
+  };
 }
 
 function cleanError(value) {
@@ -823,72 +951,113 @@ export async function requestValidatedDraft(
   };
 }
 
+async function reportValidationFailureIfExhausted(evidence, draft, fetchImpl = fetch) {
+  if (Number(draft?.repair_attempt_count || 0) < MAX_DRAFT_REPAIR_ATTEMPTS) return;
+  const repairAttempts = Array.isArray(draft?.repair_attempts) ? draft.repair_attempts : [];
+  const attempts = repairAttempts.slice(-MAX_DRAFT_REPAIR_ATTEMPTS).map((item) => ({
+    error_code: "RELEASE_NOTES_VALIDATION",
+    message: JSON.stringify(item.validation_report || item),
+    retryable: true,
+  }));
+  try {
+    await reportFailure(
+      evidence,
+      attempts,
+      JSON.stringify(draft?.validation_report || draft?.coverage || {}),
+      fetchImpl,
+      "release-notes-validation",
+    );
+  } catch (error) {
+    warn(`Failed to report exhausted release-note validation: ${cleanError(error?.message || error)}`);
+  }
+}
+
 export async function main() {
   const targetVersion = cleanVersion(process.env.RELEASE_VERSION);
   const currentTag = process.env.RELEASE_TAG || `v${targetVersion}`;
   const notesPath = process.env.RELEASE_NOTES_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-release-notes.md`);
   const evidencePath = process.env.RELEASE_EVIDENCE_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-evidence.json`);
   const draftPath = process.env.RELEASE_DRAFT_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-release-notes-draft.json`);
+  const docsPreviewPath = process.env.RELEASE_DOCS_PREVIEW_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.json`);
+  const docsPreviewMarkdownPath = process.env.RELEASE_DOCS_PREVIEW_MARKDOWN_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.md`);
+  const qualityReportPath = process.env.RELEASE_QUALITY_REPORT_FILE || join(tmpdir(), `memos-cloud-cli-${targetVersion}-quality-report.json`);
   mkdirSync(dirname(notesPath), { recursive: true });
   mkdirSync(dirname(evidencePath), { recursive: true });
   mkdirSync(dirname(draftPath), { recursive: true });
-
-  const manual = String(process.env.MANUAL_RELEASE_NOTES || "").trim();
-  if (manual) {
-    const validManualNotes = ensureSourceHint(validateManualNotes(manual));
-    const match = validManualNotes.match(new RegExp(`<!--\\s*${RELEASE_NOTES_MARKER}\\s*\\n([\\s\\S]*?)\\n-->`));
-    let payload = { items: [], coverage: { needs_review: false } };
-    if (match) {
-      payload = JSON.parse(match[1]);
-    }
-    const manualItems = (payload.items || []).map(normalizeReleaseItem).filter(Boolean);
-    const categories = categoriesFromReleaseItems(manualItems);
-    const manualDraft = {
-      ok: true,
-      needs_review: false,
-      confidence: "manual",
-      release_items: manualItems,
-      release_categories: categories.releaseCategories,
-      docs_categories: categories.docsCategories,
-      coverage: payload.coverage || { needs_review: false },
-      warnings: [],
-      language_issues: languageIssuesFromReleaseItems(manualItems),
-      postprocess: {
-        applied: false,
-        source: "manual_release_notes",
-        final_item_count: manualItems.length,
-      },
-      release_notes_markdown: validManualNotes,
-    };
-    const docsPreviewPath = join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.json`);
-    const docsPreviewMarkdownPath = join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.md`);
-    const docsPreview = docsPreviewFromDraft(manualDraft, { targetVersion });
-    writeFileSync(notesPath, validManualNotes, "utf8");
-    writeFileSync(draftPath, JSON.stringify(draftForInspection(manualDraft), null, 2), "utf8");
-    writeFileSync(docsPreviewPath, JSON.stringify(docsPreview, null, 2), "utf8");
-    writeFileSync(docsPreviewMarkdownPath, markdownFromDocsPreview(docsPreview), "utf8");
-    appendOutput("release_notes_file", notesPath);
-    appendOutput("draft_file", draftPath);
-    appendOutput("docs_preview_file", docsPreviewPath);
-    appendOutput("docs_preview_markdown_file", docsPreviewMarkdownPath);
-    appendOutput("draft_used", "false");
-    return;
-  }
+  mkdirSync(dirname(docsPreviewPath), { recursive: true });
+  mkdirSync(dirname(docsPreviewMarkdownPath), { recursive: true });
+  mkdirSync(dirname(qualityReportPath), { recursive: true });
 
   const previousRef = resolvePreviousRef(targetVersion, currentTag, process.env.RELEASE_PREVIOUS_REF || "");
   const evidence = collectEvidence({ targetVersion, currentTag, previousRef });
-  const draft = await requestValidatedDraft(evidence);
-  if (!draft.ok || draft.needs_review) {
-    fail(`Postprocessed CLI release notes require review: ${JSON.stringify(draft.validation_report || draft.coverage || {})}`);
-  }
-  const docsPreviewPath = join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.json`);
-  const docsPreviewMarkdownPath = join(tmpdir(), `memos-cloud-cli-${targetVersion}-docs-preview.md`);
-  const docsPreview = docsPreviewFromDraft(draft, { targetVersion });
   writeFileSync(evidencePath, JSON.stringify(evidenceForInspection(evidence), null, 2), "utf8");
+  const manual = String(process.env.MANUAL_RELEASE_NOTES || "").trim();
+  const draftUsed = !manual;
+  let draft;
+  if (manual) {
+    try {
+      draft = manualDraftFromEvidence(evidence, manual);
+    } catch (error) {
+      const issue = { field: "manual_release_notes", issue: cleanError(error?.message || error) };
+      draft = {
+        ok: false,
+        needs_review: true,
+        confidence: "manual",
+        release_items: [],
+        docs_categories: { cn: {}, en: {} },
+        coverage: { needs_review: true, missing_required_count: 0, invalid_source_refs: [] },
+        warnings: [issue.issue],
+        language_issues: [],
+        readability_issues: [],
+        validation_report: { ok: false, issue_count: 1, language_issue_count: 0, readability_issue_count: 0, issues: [issue] },
+        validation_attempt_count: 1,
+        repair_attempt_count: 0,
+        repair_attempts: [{ stage: "manual", attempt: 1, ok: false, needs_review: true, validation_report: { ok: false, issues: [issue] } }],
+        release_notes_markdown: manual,
+      };
+    }
+  } else {
+    try {
+      draft = await requestValidatedDraft(evidence);
+    } catch (error) {
+      const issue = { field: "draft_service", issue: cleanError(error?.message || error) };
+      draft = {
+        ok: false,
+        needs_review: true,
+        confidence: "failed",
+        release_items: [],
+        docs_categories: { cn: {}, en: {} },
+        coverage: { needs_review: true, missing_required_count: 0, invalid_source_refs: [] },
+        warnings: [issue.issue],
+        language_issues: [],
+        readability_issues: [],
+        validation_report: { ok: false, issue_count: 1, language_issue_count: 0, readability_issue_count: 0, issues: [issue] },
+        validation_attempt_count: 0,
+        repair_attempt_count: 0,
+        repair_attempts: [],
+        release_notes_markdown: "",
+      };
+    }
+  }
+
+  const docsPreview = docsPreviewFromDraft(draft, { targetVersion });
+  const qualityReport = qualityReportFromDraft(draft, {
+    targetVersion,
+    previousRef,
+    currentTag,
+    currentRef: "HEAD",
+    draftUsed,
+  });
   writeFileSync(draftPath, JSON.stringify(draftForInspection(draft), null, 2), "utf8");
   writeFileSync(docsPreviewPath, JSON.stringify(docsPreview, null, 2), "utf8");
   writeFileSync(docsPreviewMarkdownPath, markdownFromDocsPreview(docsPreview), "utf8");
-  writeFileSync(notesPath, ensureSourceHint(ensureMachineReadablePayload(draft.release_notes_markdown, draft)), "utf8");
+  writeFileSync(qualityReportPath, JSON.stringify(qualityReport, null, 2), "utf8");
+  if (String(draft.release_notes_markdown || "").trim()) {
+    const notes = draftUsed
+      ? ensureSourceHint(ensureMachineReadablePayload(draft.release_notes_markdown, draft))
+      : ensureSourceHint(draft.release_notes_markdown);
+    writeFileSync(notesPath, notes, "utf8");
+  }
 
   for (const [key, value] of Object.entries({
     release_notes_file: notesPath,
@@ -896,7 +1065,8 @@ export async function main() {
     draft_file: draftPath,
     docs_preview_file: docsPreviewPath,
     docs_preview_markdown_file: docsPreviewMarkdownPath,
-    draft_used: "true",
+    quality_report_file: qualityReportPath,
+    draft_used: String(draftUsed),
     previous_tag: previousRef,
     current_tag: currentTag,
     current_ref: "HEAD",
@@ -906,6 +1076,11 @@ export async function main() {
     repair_attempt_count: String(draft.repair_attempt_count ?? ""),
   })) {
     appendOutput(key, value);
+  }
+
+  if (!draft.ok || draft.needs_review) {
+    if (draftUsed) await reportValidationFailureIfExhausted(evidence, draft);
+    fail(`Postprocessed CLI release notes require review: ${JSON.stringify(draft.validation_report || draft.coverage || {})}`);
   }
 }
 
