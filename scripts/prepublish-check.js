@@ -6,10 +6,12 @@ const fs = require("node:fs");
 const path = require("node:path");
 
 const pkg = require("../package.json");
+const releaseAssets = require("../release-assets.json");
 
 const rootDir = path.join(__dirname, "..");
 const readmePath = path.join(rootDir, "README.md");
 const issues = [];
+const expectedTargets = ["darwin-arm64", "darwin-x64", "linux-x64", "windows-x64"];
 
 if (!pkg.name || !pkg.name.startsWith("@memtensor/")) {
   issues.push("package.json name must use the @memtensor/ scope.");
@@ -34,6 +36,34 @@ if (
 
 if (!fs.existsSync(readmePath)) {
   issues.push("README.md is missing at the repository root.");
+}
+
+if (
+  !Array.isArray(releaseAssets.targets) ||
+  JSON.stringify([...releaseAssets.targets].sort()) !== JSON.stringify([...expectedTargets].sort())
+) {
+  issues.push("release-assets.json must contain the complete four-platform target matrix.");
+}
+
+if (process.env.MEMOS_RELEASE_REQUIRE_RESOLVED_ASSETS === "1") {
+  if (Number(releaseAssets.schema) !== 2 || releaseAssets.version !== pkg.version) {
+    issues.push("live publish requires a schema 2 release-assets.json matching package.json version.");
+  }
+  if (!String(releaseAssets.public_base_url || "").startsWith("https://")) {
+    issues.push("live publish requires an HTTPS release asset base URL.");
+  }
+  for (const target of expectedTargets) {
+    const asset = releaseAssets.assets && releaseAssets.assets[target];
+    const expectedName = `memos-${pkg.version}-${target}.tar.gz`;
+    if (
+      !asset ||
+      asset.name !== expectedName ||
+      !String(asset.url || "").startsWith("https://") ||
+      !/^[a-f0-9]{64}$/i.test(String(asset.sha256 || ""))
+    ) {
+      issues.push(`live publish requires a versioned URL and SHA-256 for ${target}.`);
+    }
+  }
 }
 
 if (issues.length > 0) {

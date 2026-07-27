@@ -73,6 +73,19 @@ def load_contract() -> dict[str, Any]:
     return json.loads((ROOT / "release-assets.json").read_text(encoding="utf-8"))
 
 
+def live_contract_from_environment(contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        **contract,
+        "bucket": os.getenv("OSS_BUCKET", "").strip() or contract.get("bucket"),
+        "endpoint": os.getenv("OSS_ENDPOINT", "").strip() or contract.get("endpoint"),
+        "region": os.getenv("OSS_REGION", "").strip() or contract.get("region"),
+        "public_base_url": (
+            os.getenv("MEMOS_CLI_OSS_PUBLIC_BASE_URL", "").strip()
+            or contract.get("public_base_url")
+        ),
+    }
+
+
 def validate_live_contract(contract: dict[str, Any]) -> None:
     required = ("bucket", "endpoint", "region", "public_base_url", "targets")
     missing = [name for name in required if not contract.get(name)]
@@ -91,6 +104,41 @@ def validate_live_contract(contract: dict[str, Any]) -> None:
             "release-assets.json still contains placeholder OSS settings; "
             "replace bucket/endpoint/region/public_base_url before a live CLI release"
         )
+
+
+def runtime_contract(
+    version: str,
+    assets: list[dict[str, Any]],
+    public_base_url: str,
+) -> dict[str, Any]:
+    clean_version = version.removeprefix("v")
+    base_url = str(public_base_url or "").strip().rstrip("/")
+    if not base_url.startswith("https://"):
+        raise RuntimeError("runtime asset public_base_url must be an HTTPS URL")
+    by_target: dict[str, Any] = {}
+    for asset in assets:
+        match = re.fullmatch(
+            rf"memos-{re.escape(clean_version)}-(darwin-arm64|darwin-x64|linux-x64|windows-x64)\.tar\.gz",
+            str(asset["name"]),
+        )
+        if not match:
+            raise RuntimeError(f"cannot resolve target from release asset {asset['name']}")
+        by_target[match.group(1)] = {
+            "name": asset["name"],
+            "url": f"{base_url}/{asset['name']}",
+            "size": int(asset["size"]),
+            "sha256": asset["sha256"],
+        }
+    expected_targets = list(load_contract()["targets"])
+    if sorted(by_target) != sorted(expected_targets):
+        raise RuntimeError("runtime asset contract does not contain the complete target matrix")
+    return {
+        "schema": 2,
+        "version": clean_version,
+        "public_base_url": base_url,
+        "targets": expected_targets,
+        "assets": by_target,
+    }
 
 
 def expected_assets(version: str, assets_dir: Path) -> list[Path]:
@@ -133,7 +181,7 @@ def upload_assets(version: str, assets_dir: Path, *, dry_run: bool) -> dict[str,
     for name in ("OSS_ACCESS_KEY_ID", "OSS_ACCESS_KEY_SECRET"):
         if not os.getenv(name):
             raise RuntimeError(f"{name} is required for live OSS upload")
-    contract = load_contract()
+    contract = live_contract_from_environment(load_contract())
     validate_live_contract(contract)
     auth = oss2.ProviderAuthV4(EnvironmentVariableCredentialsProvider())
     bucket = oss2.Bucket(
@@ -175,10 +223,24 @@ def main() -> int:
     parser.add_argument("--version", required=True)
     parser.add_argument("--assets-dir", type=Path, required=True)
     parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--runtime-contract-output", type=Path)
     parser.add_argument("--dry-run", action="store_true")
     args = parser.parse_args()
     result = upload_assets(args.version, args.assets_dir, dry_run=args.dry_run)
     args.output.write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
+    if args.runtime_contract_output:
+        contract = live_contract_from_environment(load_contract())
+        if not args.dry_run:
+            validate_live_contract(contract)
+        resolved = runtime_contract(
+            args.version,
+            result["assets"],
+            str(contract.get("public_base_url") or ""),
+        )
+        args.runtime_contract_output.write_text(
+            json.dumps(resolved, indent=2) + "\n",
+            encoding="utf-8",
+        )
     print(json.dumps(result, indent=2))
     return 0
 
