@@ -1,16 +1,155 @@
-name: release
+name: MemOS CLI — Release
 
 on:
   workflow_dispatch:
-  push:
-    tags:
-      - "v*"
+    inputs:
+      version:
+        description: "Owner-approved CLI SemVer without leading v. Do not invent a version."
+        required: true
+      target_ref:
+        description: "Git ref to inspect or release. Use main for a real release."
+        required: false
+        default: "main"
+      dry_run:
+        description: "Preview evidence and docs only; never create a tag or GitHub Release."
+        required: true
+        type: boolean
+        default: true
+      create_draft_release:
+        description: "For a real run, create a Draft Release first. Publish it manually to emit release.published."
+        required: true
+        type: boolean
+        default: true
+      recover_existing_release:
+        description: "Allow an intentional rerun to create a missing GitHub Release for an existing matching tag."
+        required: true
+        type: boolean
+        default: false
+      fault_case:
+        description: "Dry-run-only changelog quality fault injection."
+        required: true
+        type: choice
+        default: "none"
+        options:
+          - none
+          - mixed_language
+          - missing_source_refs
+          - invalid_source_ref
+          - missing_important_commit
+          - thirteen_items
+          - too_long
+      publish_confirmation:
+        description: "Required only when dry_run=false. Must exactly equal: PUBLISH v<version>"
+        required: false
+        default: ""
+
+concurrency:
+  group: memos-cloud-cli-release
+  cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
+  prepare:
+    if: ${{ github.repository == 'MemTensor/MemOS-Cloud-CLI' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    outputs:
+      current_tag: ${{ steps.prepare.outputs.current_tag }}
+      previous_tag: ${{ steps.prepare.outputs.previous_tag }}
+      target_sha: ${{ steps.prepare.outputs.target_sha }}
+      release_notes_file: ${{ steps.prepare.outputs.release_notes_file }}
+      inspection_dir: ${{ steps.prepare.outputs.inspection_dir }}
+      docs_action: ${{ steps.prepare.outputs.docs_action }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Fetch branches and release tags
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --tags --force origin
+          git fetch origin '+refs/heads/*:refs/remotes/origin/*'
+
+      - name: Test release evidence and quality guards
+        run: node --test .github/scripts/prepare-cli-release.test.mjs
+
+      - name: Prepare Release and Plugin tab inspection
+        id: prepare
+        env:
+          RELEASE_VERSION: ${{ inputs.version }}
+          TARGET_REF: ${{ inputs.target_ref || 'main' }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          CREATE_DRAFT_RELEASE: ${{ inputs.create_draft_release }}
+          PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+          RELEASE_FAULT_CASE: ${{ inputs.fault_case }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_URL: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_URL }}
+          DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN }}
+          DOC_AGENT_RELEASE_FAILURE_URL: ${{ secrets.DOC_AGENT_RELEASE_FAILURE_URL }}
+        run: node .github/scripts/prepare-cli-release.mjs
+
+      - name: Upload release inspection
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: memos-cloud-cli-release-inspection
+          path: ${{ runner.temp }}/memos-cloud-cli-release-inspection
+          if-no-files-found: error
+          retention-days: 14
+
+      - name: Summarize inspection
+        if: ${{ always() }}
+        shell: bash
+        env:
+          PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
+          DRY_RUN: ${{ inputs.dry_run }}
+          FAULT_CASE: ${{ inputs.fault_case }}
+          CURRENT_TAG: ${{ steps.prepare.outputs.current_tag }}
+          PREVIOUS_TAG: ${{ steps.prepare.outputs.previous_tag }}
+          TARGET_SHA: ${{ steps.prepare.outputs.target_sha }}
+          DOCS_ACTION: ${{ steps.prepare.outputs.docs_action }}
+        run: |
+          {
+            echo "## MemOS CLI release inspection"
+            echo
+            echo "- prepare_outcome: ${PREPARE_OUTCOME}"
+            echo "- dry_run: ${DRY_RUN}"
+            echo "- fault_case: ${FAULT_CASE}"
+            echo "- range: ${PREVIOUS_TAG}...${CURRENT_TAG}"
+            echo "- target: ${TARGET_SHA}"
+            echo "- evidence_scope: whole_repository"
+            echo "- docs_action: ${DOCS_ACTION}"
+            echo
+            echo "The artifact contains README.md, github-release-notes.md/release-notes.md, evidence.json, release-notes-draft.json, docs-preview.md/json, quality-report.json, and release-contract.json."
+            if [ "${PREPARE_OUTCOME}" != "success" ]; then
+              echo
+              echo "Preparation failed closed. Review the redacted quality-report.json in the uploaded artifact."
+            fi
+            if [ "${DRY_RUN}" = "true" ]; then
+              echo
+              echo "No tag, GitHub Release, Docs PR, or deployment was created."
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+
   build:
+    if: ${{ !inputs.dry_run }}
+    needs: prepare
+    permissions:
+      contents: read
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -21,11 +160,12 @@ jobs:
           - os: windows-2022
             build_script: ./scripts/build-binary.ps1
             upload_name: windows-x64
-
     runs-on: ${{ matrix.os }}
-
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.target_sha }}
+          persist-credentials: false
 
       - uses: actions/setup-python@v5
         with:
@@ -45,11 +185,48 @@ jobs:
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.upload_name }}
+          name: memos-cli-${{ matrix.upload_name }}
           path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 14
 
-      - name: Upload release assets
-        if: startsWith(github.ref, 'refs/tags/')
-        uses: softprops/action-gh-release@v2
+  release:
+    if: ${{ !inputs.dry_run }}
+    needs:
+      - prepare
+      - build
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
         with:
-          files: dist/*.tar.gz
+          ref: ${{ needs.prepare.outputs.target_sha }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Fetch release tags
+        shell: bash
+        run: git fetch --tags --force origin
+
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: memos-cli-*
+          path: dist
+          merge-multiple: true
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: memos-cloud-cli-release-inspection
+          path: release-inspection
+
+      - name: Create or safely resume the tag and GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CURRENT_TAG: ${{ needs.prepare.outputs.current_tag }}
+          TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
+          RECOVER_EXISTING_RELEASE: ${{ inputs.recover_existing_release }}
+          RELEASE_VERSION: ${{ inputs.version }}
+        run: bash .github/scripts/publish-cli-release.sh
