@@ -38,7 +38,7 @@ jobs:
           persist-credentials: false
 
       - name: Check GitHub Actions schema and expressions
-        uses: docker://rhysd/actionlint:1.7.12
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
         with:
           args: -color -oneline
 
@@ -61,8 +61,8 @@ jobs:
           set -euo pipefail
           if [[ -n "${BASE_REF}" ]]; then
             git diff --check "origin/${BASE_REF}...${HEAD_SHA}"
-          elif [[ "${BEFORE_SHA}" =~ ^[0-9a-f]{40}$ ]] &&
-               [[ "${BEFORE_SHA}" != "0000000000000000000000000000000000000000" ]] &&
+          elif [[ "${BEFORE_SHA}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] &&
+               [[ ! "${BEFORE_SHA}" =~ ^0+$ ]] &&
                git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
             git diff --check "${BEFORE_SHA}" "${HEAD_SHA}"
           else

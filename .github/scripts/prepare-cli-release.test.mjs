@@ -1510,7 +1510,8 @@ test("pre/post-merge checks lint workflows and stay isolated from live release p
     /uses:\s*[.'"]*\/\.github\/workflows\/release\.yml/,
   );
   assert.match(checkWorkflow, /permissions:\n\s+contents: read/);
-  assert.match(checkWorkflow, /docker:\/\/rhysd\/actionlint:1\.7\.12/);
+  assert.match(checkWorkflow, /docker:\/\/rhysd\/actionlint@sha256:[0-9a-f]{64}/);
+  assert.match(checkWorkflow, /\^\[0-9a-f\]\{40\}\(\[0-9a-f\]\{24\}\)\?\$/);
   assert.match(checkWorkflow, /persist-credentials:\s+false/);
   assert.doesNotMatch(checkWorkflow, /\bsecrets\./);
   assert.doesNotMatch(checkWorkflow, /\bcontents:\s+write\b/);
