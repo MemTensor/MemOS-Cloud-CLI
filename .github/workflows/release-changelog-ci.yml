@@ -1,0 +1,99 @@
+name: MemOS CLI Release — Pre/Post-Merge Checks
+
+on:
+  pull_request:
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/**"
+      - "docs/release-changelog-*.md"
+      - "package.json"
+      - "pyproject.toml"
+      - "src/memos_cli/__init__.py"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/scripts/**"
+      - ".github/workflows/**"
+      - "docs/release-changelog-*.md"
+      - "package.json"
+      - "pyproject.toml"
+      - "src/memos_cli/__init__.py"
+
+concurrency:
+  group: release-changelog-ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Check GitHub Actions schema and expressions
+        uses: docker://rhysd/actionlint@sha256:b1934ee5f1c509618f2508e6eb47ee0d3520686341fec936f3b79331f9315667
+        with:
+          args: -color -oneline
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Test changelog evidence and safety guards
+        env:
+          RELEASE_TEST_EXPORT_DIR: ${{ runner.temp }}/memos-cloud-cli-release-contract-check
+        run: node --test .github/scripts/prepare-cli-release.test.mjs
+
+      - name: Check workflow and script formatting
+        shell: bash
+        env:
+          BASE_REF: ${{ github.base_ref }}
+          BEFORE_SHA: ${{ github.event.before }}
+          HEAD_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          if [[ -n "${BASE_REF}" ]]; then
+            git diff --check "origin/${BASE_REF}...${HEAD_SHA}"
+          elif [[ "${BEFORE_SHA}" =~ ^[0-9a-f]{40}([0-9a-f]{24})?$ ]] &&
+               [[ ! "${BEFORE_SHA}" =~ ^0+$ ]] &&
+               git cat-file -e "${BEFORE_SHA}^{commit}" 2>/dev/null; then
+            git diff --check "${BEFORE_SHA}" "${HEAD_SHA}"
+          else
+            git show --check --format= "${HEAD_SHA}"
+          fi
+          node --check .github/scripts/prepare-cli-release.mjs
+          bash -n .github/scripts/publish-cli-release.sh
+          bash -n scripts/build-binary.sh
+
+      - name: Upload offline release contract inspection
+        if: ${{ always() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: memos-cloud-cli-release-contract-check
+          path: ${{ runner.temp }}/memos-cloud-cli-release-contract-check
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Summarize release contract checks
+        if: ${{ always() }}
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          {
+            echo "## MemOS CLI release contract checks"
+            echo
+            echo "- event: ${EVENT_NAME}"
+            echo "- scope: synthetic offline v99.99.98...v99.99.99 contract fixture"
+            echo "- purpose: validate artifact schema, quality gates, source refs, and zero dry-run side effects"
+            echo
+            echo "This check does not create a tag, GitHub Release, MemOS-Docs PR, or deployment."
+            echo "The artifact is a mechanism check and is not the next real CLI release preview."
+          } >> "${GITHUB_STEP_SUMMARY}"
