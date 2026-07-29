@@ -1395,7 +1395,15 @@ test("release workflow preserves two existing build targets and uses a draft-fir
     workflow,
     /ref: \$\{\{ needs\.prepare\.outputs\.target_sha \}\}/,
   );
-  assert.match(workflow, /persist-credentials: false/);
+  assert.match(
+    workflow,
+    /prepare:\n[\s\S]*?persist-credentials: false\n[\s\S]*?\n  build:/,
+  );
+  assert.match(
+    workflow,
+    /build:\n[\s\S]*?persist-credentials: false\n[\s\S]*?\n  release:/,
+  );
+  assert.match(workflow, /release:\n[\s\S]*?persist-credentials: true/);
   assert.match(workflow, /DOC_AGENT_RELEASE_FAILURE_URL/);
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
