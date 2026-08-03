@@ -128,13 +128,30 @@ function runPublishFixture({
   remoteMainSha,
   remoteTagSha = "",
   releaseState = "missing",
+  initialReleaseDelayed = false,
   recover = "false",
   version = "2.0.0",
+  tagVisibilityDelay = 0,
+  tagPushStatus = 0,
+  tagPushMaterializes = true,
+  releaseVisibilityDelay = 0,
+  assetVisibilityDelay = 0,
+  releaseCreateStatus = 0,
+  releaseCreateMaterializes = true,
+  uploadFailures = 0,
+  editFailures = 0,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "memos-cli-publish-"));
   const mockBin = join(root, "mock-bin");
   const runnerTemp = join(root, "runner-temp");
   const callLog = join(root, "calls.log");
+  const remoteTagState = join(root, "remote-tag-state");
+  const remoteTagLookupCount = join(root, "remote-tag-lookup-count");
+  const releaseStateFile = join(root, "release-state");
+  const releaseLookupCount = join(root, "release-lookup-count");
+  const assetsVisibleFile = join(root, "assets-visible");
+  const uploadCount = join(root, "upload-count");
+  const editCount = join(root, "edit-count");
   const targetSha = "abc1234000000000000000000000000000000000";
   const effectiveRemoteMainSha = remoteMainSha ?? targetSha;
   const currentTag = `v${version}`;
@@ -145,6 +162,10 @@ function runPublishFixture({
     "# What's Changed\n\n- Verified release note.\n",
   );
   write(join(root, "dist/memos-test.tar.gz"), "test archive");
+  if (initialReleaseDelayed && releaseState !== "missing") {
+    write(releaseStateFile, `${releaseState}\n`);
+    write(releaseLookupCount, "0\n");
+  }
   const gitMock = join(mockBin, "git");
   write(
     gitMock,
@@ -156,8 +177,19 @@ function runPublishFixture({
       "  if [[ -n \"${MOCK_REMOTE_MAIN_SHA:-}\" ]]; then",
       "    printf '%s\\trefs/heads/main\\n' \"${MOCK_REMOTE_MAIN_SHA}\"",
       "  fi",
-      "elif [[ \"${1:-}\" == \"ls-remote\" && -n \"${MOCK_REMOTE_TAG_SHA:-}\" ]]; then",
-      "  printf '%s\\trefs/tags/%s\\n' \"${MOCK_REMOTE_TAG_SHA}\" \"${CURRENT_TAG}\"",
+      "elif [[ \"${1:-}\" == \"ls-remote\" && \"${2:-}\" == \"--tags\" ]]; then",
+      "  tag_sha=\"${MOCK_REMOTE_TAG_SHA:-}\"",
+      "  if [[ -s \"${MOCK_REMOTE_TAG_STATE}\" ]]; then",
+      "    lookup_count=0",
+      "    if [[ -s \"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\" ]]; then lookup_count=$(<\"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\"); fi",
+      "    lookup_count=$((lookup_count + 1))",
+      "    printf '%s\\n' \"${lookup_count}\" > \"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\"",
+      "    if [[ \"${lookup_count}\" -gt \"${MOCK_TAG_VISIBILITY_DELAY}\" ]]; then tag_sha=$(<\"${MOCK_REMOTE_TAG_STATE}\"); else tag_sha=''; fi",
+      "  fi",
+      "  if [[ -n \"${tag_sha}\" ]]; then printf '%s\\trefs/tags/%s\\n' \"${tag_sha}\" \"${CURRENT_TAG}\"; fi",
+      "elif [[ \"${1:-}\" == \"push\" && \"${2:-}\" == \"origin\" ]]; then",
+      "  if [[ \"${MOCK_TAG_PUSH_MATERIALIZES}\" == \"true\" ]]; then printf '%s\\n' \"${TARGET_SHA}\" > \"${MOCK_REMOTE_TAG_STATE}\"; fi",
+      "  exit \"${MOCK_TAG_PUSH_STATUS}\"",
       "fi",
       "",
     ].join("\n"),
@@ -171,25 +203,51 @@ function runPublishFixture({
       "set -euo pipefail",
       "printf 'gh %s\\n' \"$*\" >> \"${CALL_LOG}\"",
       "if [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"view\" ]]; then",
-      "  case \"${MOCK_RELEASE_STATE}\" in",
+      "  current_state=\"${MOCK_RELEASE_STATE}\"",
+      "  asset_names='memos-test.tar.gz'",
+      "  if [[ -s \"${MOCK_RELEASE_STATE_FILE}\" ]]; then",
+      "    lookup_count=0",
+      "    if [[ -s \"${MOCK_RELEASE_LOOKUP_COUNT}\" ]]; then lookup_count=$(<\"${MOCK_RELEASE_LOOKUP_COUNT}\"); fi",
+      "    lookup_count=$((lookup_count + 1))",
+      "    printf '%s\\n' \"${lookup_count}\" > \"${MOCK_RELEASE_LOOKUP_COUNT}\"",
+      "    if [[ \"${lookup_count}\" -gt \"${MOCK_RELEASE_VISIBILITY_DELAY}\" ]]; then current_state=$(<\"${MOCK_RELEASE_STATE_FILE}\"); else current_state='missing'; fi",
+      "    asset_visible_after=$((MOCK_RELEASE_VISIBILITY_DELAY + MOCK_ASSET_VISIBILITY_DELAY))",
+      "    if [[ \"${lookup_count}\" -le \"${asset_visible_after}\" && ! -e \"${MOCK_ASSETS_VISIBLE_FILE}\" ]]; then asset_names=''; fi",
+      "  fi",
+      "  case \"${current_state}\" in",
       "    missing)",
       "      echo 'release not found' >&2",
       "      exit 1",
       "      ;;",
       "    draft)",
-      "      printf 'true\\tfalse\\thttps://example.invalid/draft\\n'",
+      "      printf 'true\\tfalse\\thttps://example.invalid/draft\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    prerelease-draft)",
-      "      printf 'true\\ttrue\\thttps://example.invalid/draft\\n'",
+      "      printf 'true\\ttrue\\thttps://example.invalid/draft\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    published)",
-      "      printf 'false\\tfalse\\thttps://example.invalid/published\\n'",
+      "      printf 'false\\tfalse\\thttps://example.invalid/published\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    *)",
       "      echo 'unexpected mock release state' >&2",
       "      exit 2",
       "      ;;",
       "  esac",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"create\" ]]; then",
+      "  if [[ \"${MOCK_RELEASE_CREATE_MATERIALIZES}\" == \"true\" ]]; then",
+      "    created_state='draft'",
+      "    if [[ \" $* \" == *' --prerelease '* ]]; then created_state='prerelease-draft'; fi",
+      "    printf '%s\\n' \"${created_state}\" > \"${MOCK_RELEASE_STATE_FILE}\"",
+      "    printf '0\\n' > \"${MOCK_RELEASE_LOOKUP_COUNT}\"",
+      "  fi",
+      "  exit \"${MOCK_RELEASE_CREATE_STATUS}\"",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"upload\" ]]; then",
+      "  count=0; if [[ -s \"${MOCK_UPLOAD_COUNT}\" ]]; then count=$(<\"${MOCK_UPLOAD_COUNT}\"); fi; count=$((count + 1)); printf '%s\\n' \"${count}\" > \"${MOCK_UPLOAD_COUNT}\"",
+      "  if [[ \"${count}\" -le \"${MOCK_UPLOAD_FAILURES}\" ]]; then echo 'temporary upload failure' >&2; exit 1; fi",
+      "  : > \"${MOCK_ASSETS_VISIBLE_FILE}\"",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"edit\" ]]; then",
+      "  count=0; if [[ -s \"${MOCK_EDIT_COUNT}\" ]]; then count=$(<\"${MOCK_EDIT_COUNT}\"); fi; count=$((count + 1)); printf '%s\\n' \"${count}\" > \"${MOCK_EDIT_COUNT}\"",
+      "  if [[ \"${count}\" -le \"${MOCK_EDIT_FAILURES}\" ]]; then echo 'temporary edit failure' >&2; exit 1; fi",
       "fi",
       "",
     ].join("\n"),
@@ -207,7 +265,25 @@ function runPublishFixture({
         CALL_LOG: callLog,
         MOCK_REMOTE_MAIN_SHA: effectiveRemoteMainSha,
         MOCK_REMOTE_TAG_SHA: remoteTagSha,
+        MOCK_REMOTE_TAG_STATE: remoteTagState,
+        MOCK_REMOTE_TAG_LOOKUP_COUNT: remoteTagLookupCount,
+        MOCK_TAG_VISIBILITY_DELAY: String(tagVisibilityDelay),
+        MOCK_TAG_PUSH_STATUS: String(tagPushStatus),
+        MOCK_TAG_PUSH_MATERIALIZES: String(tagPushMaterializes),
         MOCK_RELEASE_STATE: releaseState,
+        MOCK_RELEASE_STATE_FILE: releaseStateFile,
+        MOCK_RELEASE_LOOKUP_COUNT: releaseLookupCount,
+        MOCK_ASSETS_VISIBLE_FILE: assetsVisibleFile,
+        MOCK_RELEASE_VISIBILITY_DELAY: String(releaseVisibilityDelay),
+        MOCK_ASSET_VISIBILITY_DELAY: String(assetVisibilityDelay),
+        MOCK_RELEASE_CREATE_STATUS: String(releaseCreateStatus),
+        MOCK_RELEASE_CREATE_MATERIALIZES: String(releaseCreateMaterializes),
+        MOCK_UPLOAD_COUNT: uploadCount,
+        MOCK_UPLOAD_FAILURES: String(uploadFailures),
+        MOCK_EDIT_COUNT: editCount,
+        MOCK_EDIT_FAILURES: String(editFailures),
+        RELEASE_RETRY_ATTEMPTS: "4",
+        RELEASE_RETRY_SLEEP_SECONDS: "0",
         CURRENT_TAG: currentTag,
         TARGET_SHA: targetSha,
         RECOVER_EXISTING_RELEASE: recover,
@@ -1418,6 +1494,7 @@ test("release workflow preserves two existing build targets and uses a draft-fir
   assert.match(workflow, /github-release-notes\.md/);
   assert.match(workflow, /bash \.github\/scripts\/publish-cli-release\.sh/);
   assert.match(publishScript, /release_flags=\(--draft\)/);
+  assert.match(publishScript, /gh release create[\s\S]*--verify-tag/);
   assert.match(publishScript, /git config --local user\.name/);
   assert.match(publishScript, /collect_release_assets/);
   assert.match(publishScript, /release_assets=\(dist\/\*\.tar\.gz\)/);
@@ -1440,6 +1517,71 @@ test("publish state machine creates only a Draft Release for a new stable tag", 
   assert.match(result.callLog, /gh release create[\s\S]*--draft/);
   assert.doesNotMatch(result.callLog, /--prerelease/);
   assert.match(result.output, /Draft Release created/);
+});
+
+test("publish state machine waits for pushed tags and newly created Draft Releases to become visible", () => {
+  const result = runPublishFixture({
+    tagVisibilityDelay: 2,
+    releaseVisibilityDelay: 1,
+    assetVisibilityDelay: 2,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/git push origin/g) || []).length, 1);
+  assert.equal((result.callLog.match(/gh release create/g) || []).length, 1);
+  assert.ok((result.callLog.match(/git ls-remote --tags/g) || []).length >= 4);
+  assert.ok((result.callLog.match(/gh release view/g) || []).length >= 5);
+  assert.match(result.output, /Draft Release created/);
+});
+
+test("publish state machine reconciles an ambiguous tag push without pushing twice", () => {
+  const reconciled = runPublishFixture({
+    tagPushStatus: 1,
+    tagPushMaterializes: true,
+    tagVisibilityDelay: 1,
+  });
+  assert.equal(reconciled.failure, undefined);
+  assert.equal((reconciled.callLog.match(/git push origin/g) || []).length, 1);
+  assert.equal((reconciled.callLog.match(/gh release create/g) || []).length, 1);
+  assert.match(reconciled.output, /continuing without pushing twice/);
+
+  const missing = runPublishFixture({
+    tagPushStatus: 1,
+    tagPushMaterializes: false,
+  });
+  assert.ok(missing.failure);
+  assert.equal((missing.callLog.match(/git push origin/g) || []).length, 1);
+  assert.doesNotMatch(missing.callLog, /gh release create/);
+  assert.match(missing.output, /Refusing to issue a second push/);
+});
+
+test("publish state machine reconciles an ambiguous create response without creating twice", () => {
+  const reconciled = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: true,
+    releaseVisibilityDelay: 1,
+  });
+  assert.equal(reconciled.failure, undefined);
+  assert.equal((reconciled.callLog.match(/gh release create/g) || []).length, 1);
+
+  const missing = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: false,
+  });
+  assert.ok(missing.failure);
+  assert.equal((missing.callLog.match(/gh release create/g) || []).length, 1);
+  assert.match(missing.output, /no matching Draft became visible/);
+});
+
+test("publish state machine resumes an incomplete Draft instead of creating a second Release", () => {
+  const result = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: true,
+    assetVisibilityDelay: 100,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/gh release create/g) || []).length, 1);
+  assert.equal((result.callLog.match(/gh release upload/g) || []).length, 1);
+  assert.match(result.output, /safely resuming the Draft upload/);
 });
 
 test("publish state machine rechecks main before release mutation", () => {
@@ -1470,6 +1612,20 @@ test("publish state machine requires explicit recovery for a matching orphan tag
   assert.match(recovered.callLog, /gh release create[\s\S]*--draft/);
 });
 
+test("publish state machine waits for a matching existing Release before classifying a tag as orphaned", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const result = runPublishFixture({
+    remoteTagSha: targetSha,
+    releaseState: "draft",
+    initialReleaseDelayed: true,
+    releaseVisibilityDelay: 2,
+  });
+  assert.equal(result.failure, undefined);
+  assert.ok((result.callLog.match(/gh release view/g) || []).length >= 3);
+  assert.match(result.callLog, /gh release upload/);
+  assert.doesNotMatch(result.output, /recover_existing_release=true/);
+});
+
 test("publish state machine resumes a Draft and leaves a published Release unchanged", () => {
   const targetSha = "abc1234000000000000000000000000000000000";
   const draft = runPublishFixture({
@@ -1491,6 +1647,20 @@ test("publish state machine resumes a Draft and leaves a published Release uncha
     published.callLog,
     /gh release upload|gh release edit|gh release create|git tag |git push /,
   );
+});
+
+test("publish state machine safely retries idempotent Draft upload and edit operations", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const result = runPublishFixture({
+    remoteTagSha: targetSha,
+    releaseState: "draft",
+    uploadFailures: 1,
+    editFailures: 1,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/gh release upload/g) || []).length, 2);
+  assert.equal((result.callLog.match(/gh release edit/g) || []).length, 2);
+  assert.doesNotMatch(result.callLog, /gh release create|git tag |git push /);
 });
 
 test("publish state machine refuses a conflicting tag and marks prereleases", () => {
