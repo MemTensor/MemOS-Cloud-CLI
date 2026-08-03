@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -9,6 +10,7 @@ import typer
 
 from memos_cli.config import MemOSConfig, PlatformConfig, load_config
 from memos_cli.commands import init
+from memos_cli import executable
 
 
 class GuidancePathResolutionTests(unittest.TestCase):
@@ -145,6 +147,24 @@ class GuidancePathResolutionTests(unittest.TestCase):
         self.assertIn("## MemOS Plugin Mode", content)
         self.assertIn("Plugin guidance", content)
 
+    def test_native_hook_guidance_excludes_automatic_cli_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template = Path(temp_dir) / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\nmust run memos search and memos add\n\n"
+                "---\n\n## MemOS Plugin Mode\n\nplugin guidance\n\n"
+                "---\n\n## MemOS Native Codex Hook Mode\n\n"
+                "Do not run memos search automatically.\n"
+                "Do not run memos add automatically.\n",
+                encoding="utf-8",
+            )
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                content = init._build_native_hook_guidance("codex")
+
+        self.assertIn("MemOS Native Codex Hook Mode", content)
+        self.assertNotIn("must run memos search", content)
+        self.assertNotIn("plugin guidance", content)
+
     def test_uninstall_guidance_removes_managed_block_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -238,6 +258,31 @@ class GuidancePathResolutionTests(unittest.TestCase):
                         init._resolve_memos_bin_dir(),
                         str(memos.parent),
                     )
+
+    def test_resolve_memos_executable_supports_node_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            launcher = Path(temp_dir) / "memos.js"
+            launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+            with patch.object(executable.sys, "argv", [str(launcher)]):
+                with patch.object(executable.shutil, "which", return_value=None):
+                    with patch.object(executable, "_npm_global_bin_dir", return_value=None):
+                        self.assertEqual(executable.resolve_memos_executable(), str(launcher.resolve()))
+
+    def test_codex_skill_install_uses_management_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "bundle" / "skills" / "memos-memory"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("must run memos search and memos add\n")
+            (source / "SKILL.codex-hook.md").write_text("native hook owns lifecycle\n")
+            target = root / ".codex" / "skills"
+            with patch.object(init, "_bundle_root", return_value=root / "bundle"):
+                with patch.object(init, "_resolve_skills_dir", return_value=target):
+                    installed_root = init._install_bundled_skills("codex", native_hook=True)
+
+            installed = installed_root / "memos-memory"
+            self.assertEqual((installed / "SKILL.md").read_text(), "native hook owns lifecycle\n")
+            self.assertFalse((installed / "SKILL.codex-hook.md").exists())
 
     def test_resolve_memos_bin_dir_falls_back_to_npm_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -494,6 +539,166 @@ class GuidancePathResolutionTests(unittest.TestCase):
 
 
 class InitConfigResolutionTests(unittest.TestCase):
+    @staticmethod
+    def _complete_codex_config() -> MemOSConfig:
+        config = MemOSConfig(
+            platform=PlatformConfig(
+                api_key="existing-api-key",
+                base_url="https://example.test/api",
+            )
+        )
+        config.defaults.user_id = "existing-user"
+        config.defaults.conversation_id = "existing-conversation"
+        return config
+
+    def test_codex_init_installs_complete_native_hook_integration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.object(init, "CONFIG_FILE", config_file):
+                with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                    with patch.object(init.sys.stdin, "isatty", return_value=False):
+                        with patch.object(init, "get_backend", return_value=Backend()):
+                            with patch.object(init, "save_config"):
+                                with patch.object(
+                                    init,
+                                    "install_codex_hook",
+                                    return_value=root / ".codex" / "hooks.json",
+                                ) as install_hook:
+                                    with patch.object(
+                                        init,
+                                        "_install_bundled_skills",
+                                        return_value=root / "skills" / "memos",
+                                    ) as install_skills:
+                                        with patch.object(
+                                            init,
+                                            "_install_agent_guidance",
+                                            return_value=[root / "AGENTS.md"],
+                                        ) as install_guidance:
+                                            with patch.object(
+                                                init,
+                                                "_install_shell_path_entries",
+                                                return_value=[],
+                                            ):
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="codex",
+                                                )
+
+            install_hook.assert_called_once_with()
+            install_skills.assert_called_once_with("codex", native_hook=True)
+            install_guidance.assert_called_once_with(
+                "codex",
+                memos_plugin=False,
+                native_hook=True,
+            )
+
+    def test_codex_init_writes_hook_skill_and_guidance_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_home = root / ".codex"
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+            executable_path = root / "bin" / "memos"
+            executable_path.parent.mkdir()
+            executable_path.write_text("#!/bin/sh\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                with patch.object(init, "CONFIG_FILE", config_file):
+                    with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                        with patch.object(init.sys.stdin, "isatty", return_value=False):
+                            with patch.object(init, "get_backend", return_value=Backend()):
+                                with patch.object(init, "save_config"):
+                                    with patch.object(init, "_install_shell_path_entries", return_value=[]):
+                                        with patch(
+                                            "memos_cli.hooks.installer._resolve_memos_executable",
+                                            return_value=executable_path,
+                                        ):
+                                            init.init_cmd(
+                                                api_key=None,
+                                                user_id=None,
+                                                conversation_id=None,
+                                                memos_plugin=False,
+                                                agent="codex",
+                                            )
+
+            hooks = json.loads((codex_home / "hooks.json").read_text())
+            self.assertEqual(set(hooks["hooks"]), {"UserPromptSubmit", "Stop"})
+            skill = (codex_home / "skills" / "memos" / "memos-memory" / "SKILL.md").read_text()
+            guidance = (codex_home / "AGENTS.md").read_text()
+            self.assertIn("native Codex hook is the only owner", skill)
+            self.assertNotIn("at the start of a conversation, must use", skill)
+            self.assertIn("MemOS Native Codex Hook Mode", guidance)
+            self.assertNotIn("must run `memos search` once", guidance)
+
+    def test_codex_init_does_not_switch_skill_or_guidance_when_hook_install_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.object(init, "CONFIG_FILE", config_file):
+                with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                    with patch.object(init.sys.stdin, "isatty", return_value=False):
+                        with patch.object(init, "get_backend", return_value=Backend()):
+                            with patch.object(init, "save_config"):
+                                with patch.object(
+                                    init,
+                                    "install_codex_hook",
+                                    side_effect=init.HookConfigError("broken hooks config"),
+                                ):
+                                    with patch.object(init, "_install_bundled_skills") as install_skills:
+                                        with patch.object(init, "_install_agent_guidance") as install_guidance:
+                                            with self.assertRaises(typer.Exit) as raised:
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="codex",
+                                                )
+
+            self.assertEqual(raised.exception.exit_code, 1)
+            install_skills.assert_not_called()
+            install_guidance.assert_not_called()
+
+    def test_codex_uninstall_removes_native_hook_with_skill_and_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(init, "_resolve_skills_dir", return_value=root / "skills"):
+                with patch.object(
+                    init,
+                    "uninstall_codex_hook",
+                    return_value=root / ".codex" / "hooks.json",
+                ) as uninstall_hook:
+                    with patch.object(init, "_remove_bundled_skills", return_value=[]):
+                        with patch.object(init, "_uninstall_agent_guidance", return_value=[]):
+                            init.uninstall_cmd(
+                                agent="codex",
+                                yes=True,
+                                remove_config=False,
+                                remove_path=False,
+                            )
+
+            uninstall_hook.assert_called_once_with()
+
     def test_init_reuses_complete_existing_config_when_prompts_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.yaml"

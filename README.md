@@ -22,6 +22,7 @@ MemOS-CLI/
 │   │   └── kb_api.py        # Knowledge base API
 │   └── commands/            # CLI commands
 │       ├── init.py          # memos init
+│       ├── hook.py          # internal memos hook run entrypoint
 │       ├── config_cmd.py    # memos config (show/get/set)
 │       ├── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
 │       ├── memory_cmd.py    # Memory command execution layer
@@ -29,6 +30,11 @@ MemOS-CLI/
 │       ├── message_cmd.py   # Message command execution layer
 │       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
 │       └── kb_cmd.py        # Knowledge base command execution layer
+│   └── hooks/               # Native host hook adapters
+│       ├── runner.py        # Codex stdin/stdout lifecycle runner
+│       ├── codex.py         # Codex payload and transcript parsing
+│       ├── state_store.py   # Cross-process turn state
+│       └── installer.py     # Safe hooks.json merge/uninstall
 ├── skills/
 │   └── memos-memory/        # Memory domain skill
 │       ├── SKILL.md         # Skill entry and usage protocol
@@ -81,7 +87,7 @@ memos uninstall --agent codex --yes
 npm uninstall -g @memtensor/memos-cloud-cli
 ```
 
-Run `memos uninstall --agent <agent> --yes` before removing the npm package. It removes the installed MemOS skill and cleans the managed MemOS block from agent guidance files such as `AGENTS.md` or `CLAUDE.md`; `npm uninstall` only removes the global binary.
+Run `memos uninstall --agent <agent> --yes` before removing the npm package. For Codex it removes the native Hook, turn state, installed skill, and managed guidance block; `npm uninstall` only removes the global binary.
 
 See `skills/memos-memory/references/memos-uninstall.md` for the agent-facing uninstall workflow.
 
@@ -93,10 +99,21 @@ See `skills/memos-memory/references/memos-uninstall.md` for the agent-facing uni
 memos init --agent codex
 ```
 
-This command installs the bundled MemOS operation skill and writes the matching agent guidance.
+For Codex this command installs the complete MemOS integration: API configuration, management skill, native Hook, Hook-aware guidance, and CLI PATH setup. The Hook automatically retrieves memory on `UserPromptSubmit` and captures the completed turn on `Stop`.
 `--agent` is required, and installation to a generic global directory is not supported.
-`--memos-plugin` defaults to `false`. Set it to `true` when the target agent already has the MemOS memory plugin installed and should prefer plugin search/add flows.
+`--memos-plugin` is a legacy option for non-Codex targets and is ignored for Codex.
 It also installs shell completion automatically for the current shell when shell detection succeeds.
+
+### Native Codex Hook
+
+The native Hook is installed and removed together with the Codex integration:
+
+```bash
+memos init --agent codex
+memos uninstall --agent codex --yes
+```
+
+The installed Codex skill is management-only, so it does not repeat the Hook's automatic search/add lifecycle. The installer merges only MemOS-managed entries into `~/.codex/hooks.json`, preserves other hooks, and is safe to run repeatedly. The API key remains in `~/.memos/config.yaml`; it is never copied into Codex configuration or hook state. `memos hook run --agent codex` is an internal command invoked by Codex. Hook failures are fail-open and do not block the host conversation.
 
 Supported targets:
 - `--agent codex` → `~/.codex/skills/memos/`
@@ -120,6 +137,8 @@ Or with arguments:
 ```bash
 memos init --api-key YOUR_API_KEY --agent codex
 ```
+
+For Codex, automatic search and add are already owned by the native Hook. The commands below are optional direct CLI operations, not additional per-turn lifecycle steps.
 
 ### 2. Add Memory
 

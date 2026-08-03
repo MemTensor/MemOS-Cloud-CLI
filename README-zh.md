@@ -22,6 +22,7 @@ MemOS-CLI/
 │   │   └── kb_api.py        # 知识库 API
 │   └── commands/            # CLI 命令
 │       ├── init.py          # memos init
+│       ├── hook.py          # 内部 memos hook run 入口
 │       ├── config_cmd.py    # memos config (show/get/set)
 │       ├── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
 │       ├── memory_cmd.py    # 记忆命令执行层
@@ -29,6 +30,11 @@ MemOS-CLI/
 │       ├── message_cmd.py   # 消息命令执行层
 │       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
 │       └── kb_cmd.py        # 知识库命令执行层
+│   └── hooks/               # 宿主原生 Hook 适配器
+│       ├── runner.py        # Codex stdin/stdout 生命周期运行器
+│       ├── codex.py         # Codex payload 和 transcript 解析
+│       ├── state_store.py   # 跨进程回合状态
+│       └── installer.py     # 安全合并/卸载 hooks.json
 ├── skills/
 │   └── memos-memory/        # 记忆领域 skill
 │       ├── SKILL.md         # Skill 入口与使用规范
@@ -78,7 +84,7 @@ memos uninstall --agent codex --yes
 npm uninstall -g @memtensor/memos-cloud-cli
 ```
 
-请先运行 `memos uninstall --agent <agent> --yes`，再卸载 npm 包。该命令会删除已安装的 MemOS skill，并清理 `AGENTS.md` 或 `CLAUDE.md` 等 agent guidance 文件中的 MemOS 托管块；`npm uninstall` 只会移除全局二进制。
+请先运行 `memos uninstall --agent <agent> --yes`，再卸载 npm 包。对于 Codex，该命令会删除原生 Hook、回合状态、已安装 Skill 和 MemOS 托管 guidance；`npm uninstall` 只会移除全局二进制。
 
 
 ## 快速开始
@@ -89,9 +95,21 @@ npm uninstall -g @memtensor/memos-cloud-cli
 memos init --agent codex
 ```
 
-该命令会安装 MemOS 记忆操作 skill，并写入对应 Agent 的 guidance。
+对于 Codex，该命令会一次安装完整 MemOS 集成：API 配置、管理型 Skill、原生 Hook、Hook-aware guidance 和 CLI PATH。Hook 会在 `UserPromptSubmit` 自动检索，在 `Stop` 自动保存完整回合。
 `--agent` 为必填项，不支持安装到通用全局目录。
+`--memos-plugin` 是非 Codex 目标的旧兼容选项，在 Codex 下会被忽略。
 当 shell 能被识别时，该命令也会自动安装命令补全。
+
+### Codex 原生 Hook
+
+Codex 原生 Hook 与完整集成统一安装、统一卸载：
+
+```bash
+memos init --agent codex
+memos uninstall --agent codex --yes
+```
+
+Codex 安装的是管理型 Skill，不会重复 Hook 的自动 search/add。安装器只合并 MemOS 自己管理的 `~/.codex/hooks.json` 条目，保留其他 Hook，重复安装幂等。API Key 仍保存在 `~/.memos/config.yaml`，不会写入 Codex 配置或 Hook 状态文件。`memos hook run --agent codex` 是 Codex 内部调用命令；MemOS 故障时会 fail-open，不阻断宿主会话。
 
 支持的目标：
 - `--agent codex` → `~/.codex/skills/memos/`
@@ -115,6 +133,8 @@ memos init --agent codex
 ```bash
 memos init --api-key YOUR_API_KEY --agent codex
 ```
+
+对于 Codex，自动 search/add 已由原生 Hook 负责。下面的命令只是可选的显式 CLI 操作，不是每轮需要重复执行的生命周期步骤。
 
 ### 2. 新增记忆
 

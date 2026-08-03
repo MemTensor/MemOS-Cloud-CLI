@@ -31,6 +31,7 @@ from memos_cli.config import (
     save_config,
 )
 from memos_cli.backend.memos_api import APIError, AuthError, get_backend
+from memos_cli.hooks.installer import HookConfigError, install_codex_hook, uninstall_codex_hook
 
 console = Console()
 DEFAULT_BASE_URL = "https://memos.memtensor.cn/api/openmem/v1"
@@ -127,7 +128,7 @@ def _resolve_skills_dir(agent: str) -> Path:
     return target if target is not None else cfg.skills_dir
 
 
-def _install_bundled_skills(agent: str) -> Path:
+def _install_bundled_skills(agent: str, *, native_hook: bool = False) -> Path:
     """Install bundled MemOS operation skill into the global skills directory."""
     source_dir = _bundle_root() / "skills"
     if not source_dir.exists():
@@ -148,6 +149,14 @@ def _install_bundled_skills(agent: str) -> Path:
     if destination.exists():
         shutil.rmtree(destination)
     shutil.copytree(source_skill, destination)
+
+    hook_skill = destination / "SKILL.codex-hook.md"
+    if native_hook:
+        if not hook_skill.exists():
+            raise FileNotFoundError(f"Bundled Codex Hook skill not found: {hook_skill}")
+        shutil.copyfile(hook_skill, destination / "SKILL.md")
+    if hook_skill.exists():
+        hook_skill.unlink()
 
     return memos_target
 
@@ -394,22 +403,53 @@ def _uninstall_shell_path_entries(agent: str) -> list[Path]:
     return removed_files
 
 
+GUIDANCE_HEADINGS = (
+    "## MemOS CLI",
+    "## MemOS Plugin Mode",
+    "## MemOS Native Codex Hook Mode",
+)
+
+
+def _guidance_section(template: str, heading: str) -> str | None:
+    start = template.find(heading)
+    if start == -1:
+        return None
+    ends = [template.find(item, start + len(heading)) for item in GUIDANCE_HEADINGS if item != heading]
+    valid_ends = [index for index in ends if index != -1]
+    end = min(valid_ends) if valid_ends else len(template)
+    content = template[start:end].rstrip()
+    if content.endswith("---"):
+        content = content[:-3].rstrip()
+    return content
+
+
+def _wrap_guidance(content: str) -> str:
+    return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
+
+
 def _build_agent_guidance(agent: str) -> str:
     """Build agent-specific MemOS CLI guidance content from template."""
     template = _guidance_template_path().read_text(encoding="utf-8")
-    plugin_start = template.find("## MemOS Plugin Mode")
-    content = template[:plugin_start].rstrip() if plugin_start != -1 else template.rstrip()
-    return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
+    content = _guidance_section(template, "## MemOS CLI") or template.rstrip()
+    return _wrap_guidance(content)
 
 
 def _build_plugin_agent_guidance(agent: str) -> str:
     """Build agent guidance for environments where the MemOS plugin is installed."""
     template = _guidance_template_path().read_text(encoding="utf-8")
-    start = template.find("## MemOS Plugin Mode")
-    if start == -1:
+    content = _guidance_section(template, "## MemOS Plugin Mode")
+    if content is None:
         return _build_agent_guidance(agent)
-    content = template[start:].rstrip()
-    return f"{GUIDANCE_START}\n{content}\n{GUIDANCE_END}\n"
+    return _wrap_guidance(content)
+
+
+def _build_native_hook_guidance(agent: str) -> str:
+    """Build guidance where the Codex Hook owns automatic search and add."""
+    template = _guidance_template_path().read_text(encoding="utf-8")
+    content = _guidance_section(template, "## MemOS Native Codex Hook Mode")
+    if content is None:
+        raise FileNotFoundError("Native Codex Hook guidance is missing from the bundled template")
+    return _wrap_guidance(content)
 
 
 def _upsert_guidance_block(path: Path, content: str) -> None:
@@ -461,12 +501,8 @@ alwaysApply: true
 def _build_standalone_guidance(agent: str, *, memos_plugin: bool = False) -> str:
     """Build standalone guidance with frontmatter (for Trae rules format)."""
     template = _guidance_template_path().read_text(encoding="utf-8")
-    if memos_plugin:
-        start = template.find("## MemOS Plugin Mode")
-        content = template[start:].rstrip() if start != -1 else template.rstrip()
-    else:
-        plugin_start = template.find("## MemOS Plugin Mode")
-        content = template[:plugin_start].rstrip() if plugin_start != -1 else template.rstrip()
+    heading = "## MemOS Plugin Mode" if memos_plugin else "## MemOS CLI"
+    content = _guidance_section(template, heading) or template.rstrip()
     return f"{STANDALONE_FRONTMATTER}{content}\n"
 
 
@@ -481,7 +517,12 @@ def _remove_standalone_guidance(path: Path) -> bool:
     return True
 
 
-def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> list[Path]:
+def _install_agent_guidance(
+    agent: str,
+    *,
+    memos_plugin: bool = False,
+    native_hook: bool = False,
+) -> list[Path]:
     """Install or update global MemOS CLI guidance for the target agent."""
     normalized = agent.strip().lower()
     cfg = AGENT_REGISTRY.get(normalized) or AgentConfig(
@@ -490,12 +531,20 @@ def _install_agent_guidance(agent: str, *, memos_plugin: bool = False) -> list[P
     )
     guidance_files = _resolve_guidance_files(agent)
 
+    if memos_plugin and native_hook:
+        raise ValueError("Plugin guidance and native Hook guidance are mutually exclusive")
+
     if cfg.guidance_mode == "standalone":
         content = _build_standalone_guidance(agent, memos_plugin=memos_plugin)
         for guidance_file in guidance_files:
             _write_standalone_guidance(guidance_file, content)
     else:
-        content = _build_plugin_agent_guidance(agent) if memos_plugin else _build_agent_guidance(agent)
+        if native_hook:
+            content = _build_native_hook_guidance(agent)
+        elif memos_plugin:
+            content = _build_plugin_agent_guidance(agent)
+        else:
+            content = _build_agent_guidance(agent)
         for guidance_file in guidance_files:
             _upsert_guidance_block(guidance_file, content)
     return guidance_files
@@ -647,7 +696,7 @@ def init_cmd(
         help=f"Install skill for target agent: {', '.join(_valid_agent_names())}.",
     ),
 ):
-    """Initialize MemOS CLI and install bundled skills to an explicit agent skills directory."""
+    """Install the MemOS integration; Codex includes the native memory Hook."""
     console.print("[bold blue]◆ MemOS CLI Initialization[/]\n")
 
     if not agent:
@@ -657,6 +706,15 @@ def init_cmd(
             f"Skill installation target must be specified explicitly ({valid})."
         )
         raise typer.Exit(1)
+
+    normalized_agent = agent.strip().lower()
+    native_hook = normalized_agent == "codex"
+    if native_hook and memos_plugin:
+        console.print(
+            "[yellow]Warning:[/] --memos-plugin is ignored for codex because "
+            "the native Hook integration is installed by default."
+        )
+        memos_plugin = False
 
     try:
         _resolve_skills_dir(agent)
@@ -721,7 +779,7 @@ def init_cmd(
     )
     config.defaults.user_id = user_id or DEFAULT_USER_ID
     config.defaults.conversation_id = conversation_id or DEFAULT_CONVERSATION_ID
-    config.defaults.framework = agent.strip().lower()
+    config.defaults.framework = normalized_agent
 
     try:
         get_backend(config).ping()
@@ -736,20 +794,41 @@ def init_cmd(
         raise typer.Exit(1)
 
     save_config(config)
+    hook_path: Path | None = None
     try:
-        skills_path = _install_bundled_skills(agent)
-    except ValueError as exc:
+        if native_hook:
+            hook_path = install_codex_hook()
+        skills_path = _install_bundled_skills(agent, native_hook=native_hook)
+        shell_path_files = _install_shell_path_entries(agent)
+        guidance_paths = _install_agent_guidance(
+            agent,
+            memos_plugin=memos_plugin,
+            native_hook=native_hook,
+        )
+    except Exception as exc:
+        if native_hook and hook_path is not None:
+            try:
+                uninstall_codex_hook()
+            except Exception:
+                pass
+            try:
+                _install_bundled_skills(agent, native_hook=False)
+                _install_agent_guidance(agent, native_hook=False)
+            except Exception:
+                pass
         console.print(f"\n[red]Error:[/] {exc}")
         raise typer.Exit(1)
-    guidance_paths = _install_agent_guidance(agent, memos_plugin=memos_plugin)
-    shell_path_files = _install_shell_path_entries(agent)
 
     console.print("\n[green]✓[/] Configuration saved successfully!")
     console.print(f"  Config file: [dim]~/.memos/config.yaml[/]")
     console.print(f"  Default user ID: [dim]{config.defaults.user_id}[/]")
     console.print(f"  Default conversation ID: [dim]{config.defaults.conversation_id}[/]")
     console.print(f"  Target agent: [dim]{agent}[/]")
-    console.print(f"  MemOS plugin: [dim]{'enabled' if memos_plugin else 'disabled'}[/]")
+    if native_hook:
+        console.print("  Integration mode: [dim]Native Codex Hook[/]")
+        console.print(f"  Native hook config: [dim]{hook_path}[/]")
+    else:
+        console.print(f"  MemOS plugin: [dim]{'enabled' if memos_plugin else 'disabled'}[/]")
     console.print(f"  Installed skill: [dim]{skills_path / 'memos-memory'}[/]")
     console.print(f"  Agent guidance: [dim]{', '.join(str(path) for path in guidance_paths)}[/]")
     if shell_path_files:
@@ -762,7 +841,10 @@ def init_cmd(
             f"  Config variables: [dim]Already available in {CONFIG_FILE}. "
             "Use `memos config set <key> <value>` to update them later.[/]"
         )
-    console.print('\n[dim]Try running:[/] memos add "Your first memory"')
+    if native_hook:
+        console.print("\n[dim]Restart Codex to load the installed MemOS Hook.[/]")
+    else:
+        console.print('\n[dim]Try running:[/] memos add "Your first memory"')
 
 
 def uninstall_cmd(
@@ -800,13 +882,22 @@ def uninstall_cmd(
         console.print(f"\n[red]Error:[/] {exc}")
         raise typer.Exit(1)
 
+    normalized_agent = agent.strip().lower()
     if not yes:
         confirmed = typer.confirm(
-            f"Remove MemOS skills and guidance for agent '{agent}'?"
+            f"Remove the complete MemOS integration for agent '{agent}'?"
         )
         if not confirmed:
             console.print("[yellow]Uninstall cancelled.[/]")
             raise typer.Exit()
+
+    removed_hook: Path | None = None
+    if normalized_agent == "codex":
+        try:
+            removed_hook = uninstall_codex_hook()
+        except HookConfigError as exc:
+            console.print(f"\n[red]Error:[/] {exc}")
+            raise typer.Exit(1)
 
     removed_skills = _remove_bundled_skills(agent)
     removed_guidance = _uninstall_agent_guidance(agent)
@@ -814,6 +905,11 @@ def uninstall_cmd(
     removed_config = _remove_config_file() if remove_config else None
 
     console.print("\n[green]✓[/] MemOS agent integration removed.")
+    if normalized_agent == "codex":
+        if removed_hook:
+            console.print(f"  Cleaned native hook: [dim]{removed_hook}[/]")
+        else:
+            console.print("  Cleaned native hook: [dim]Nothing found[/]")
     if removed_skills:
         console.print(f"  Removed skill: [dim]{', '.join(str(path) for path in removed_skills)}[/]")
     else:

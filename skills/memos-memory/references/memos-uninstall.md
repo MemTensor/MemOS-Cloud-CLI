@@ -21,6 +21,7 @@ memos uninstall --agent <CURRENT_AGENT> --yes
 
 ## Behavior
 
+- for Codex, removes the MemOS-managed `UserPromptSubmit` and `Stop` Hook entries and clears managed turn-state files;
 - removes the bundled MemOS skill from the target agent skills directory;
 - removes only the managed MemOS guidance block from agent guidance files such as `AGENTS.md` or `CLAUDE.md`;
 - keeps guidance files in place even when they become empty after MemOS content is removed;
