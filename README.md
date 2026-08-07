@@ -546,3 +546,5 @@ python -m memos_cli --help
 ## License
 
 [Apache 2.0 License.](https://github.com/lijicode/MemOS/blob/main/LICENSE)
+
+<!-- AUTODEV-DINGTALK-REAL-TEST-20260807 -->
