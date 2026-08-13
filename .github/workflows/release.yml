@@ -1,6 +1,11 @@
 name: MemOS CLI — Release
 
 on:
+  # Inspect every PR closed against main. Only a same-repository merged PR that
+  # updates all three committed CLI versions to one newer SemVer may release.
+  pull_request:
+    types: [closed]
+    branches: [main]
   workflow_dispatch:
     inputs:
       version:
@@ -51,12 +56,104 @@ permissions:
   contents: read
 
 jobs:
+  resolve:
+    if: ${{ github.repository == 'MemTensor/MemOS-Cloud-CLI' }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    outputs:
+      eligible: ${{ steps.resolve.outputs.eligible || 'false' }}
+      reason: ${{ steps.resolve.outputs.reason }}
+      version: ${{ steps.resolve.outputs.version }}
+      target_ref: ${{ steps.resolve.outputs.target_ref }}
+      dry_run: ${{ steps.resolve.outputs.dry_run }}
+      create_draft_release: ${{ steps.resolve.outputs.create_draft_release }}
+      recover_existing_release: ${{ steps.resolve.outputs.recover_existing_release }}
+      fault_case: ${{ steps.resolve.outputs.fault_case }}
+      publish_confirmation: ${{ steps.resolve.outputs.publish_confirmation }}
+      release_source_mode: ${{ steps.resolve.outputs.release_source_mode }}
+      npm_version_exists: ${{ steps.resolve.outputs.npm_version_exists }}
+      npm_git_head: ${{ steps.resolve.outputs.npm_git_head }}
+      recovery_required: ${{ steps.resolve.outputs.recovery_required }}
+    steps:
+      - name: Check merged pull request boundary
+        id: gate
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          inspect=false
+          reason="manual workflow dispatch"
+          if [ "${EVENT_NAME}" = "pull_request" ]; then
+            reason="closed pull request is not an eligible same-repository main merge"
+            if [ "${PR_MERGED}" = "true" ] && \
+               [ "${PR_BASE_REF}" = "main" ] && \
+               [ "${PR_HEAD_REPO}" = "${REPOSITORY}" ]; then
+              inspect=true
+              reason="same-repository pull request merged into main; inspect committed versions"
+            fi
+          fi
+          {
+            echo "inspect=${inspect}"
+            echo "reason=${reason}"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "## MemOS CLI release trigger"
+            echo
+            echo "- inspect committed version transition: \`${inspect}\`"
+            echo "- result: ${reason}"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - uses: actions/checkout@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
+        with:
+          ref: >-
+            ${{
+              github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha ||
+              github.event.repository.default_branch
+            }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - uses: actions/setup-node@v4
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
+        with:
+          node-version: 22
+
+      - name: Resolve manual or merged version intent
+        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
+        id: resolve
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          PR_MERGED: ${{ github.event.pull_request.merged || false }}
+          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
+          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
+          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          INPUT_VERSION: ${{ inputs.version }}
+          INPUT_TARGET_REF: ${{ inputs.target_ref || 'main' }}
+          INPUT_DRY_RUN: ${{ inputs.dry_run }}
+          INPUT_CREATE_DRAFT_RELEASE: ${{ inputs.create_draft_release }}
+          INPUT_RECOVER_EXISTING_RELEASE: ${{ inputs.recover_existing_release }}
+          INPUT_FAULT_CASE: ${{ inputs.fault_case || 'none' }}
+          INPUT_PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
+        run: node .github/scripts/resolve-cli-release.mjs
+
   prepare:
-    if: ${{ github.repository == 'MemTensor/MemOS-Cloud-CLI' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch) }}
+    if: ${{ needs.resolve.outputs.eligible == 'true' }}
+    needs: resolve
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
-      contents: write
+      contents: read
     outputs:
       current_tag: ${{ steps.prepare.outputs.current_tag }}
       previous_tag: ${{ steps.prepare.outputs.previous_tag }}
@@ -83,17 +180,18 @@ jobs:
           git fetch origin '+refs/heads/*:refs/remotes/origin/*'
 
       - name: Test release evidence and quality guards
-        run: node --test .github/scripts/prepare-cli-release.test.mjs
+        run: node --test .github/scripts/*.test.mjs
 
       - name: Prepare Release and Plugin tab inspection
         id: prepare
         env:
-          RELEASE_VERSION: ${{ inputs.version }}
-          TARGET_REF: ${{ inputs.target_ref || 'main' }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          CREATE_DRAFT_RELEASE: ${{ inputs.create_draft_release }}
-          PUBLISH_CONFIRMATION: ${{ inputs.publish_confirmation }}
-          RELEASE_FAULT_CASE: ${{ inputs.fault_case }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          TARGET_REF: ${{ needs.resolve.outputs.target_ref }}
+          DRY_RUN: ${{ needs.resolve.outputs.dry_run }}
+          CREATE_DRAFT_RELEASE: ${{ needs.resolve.outputs.create_draft_release }}
+          PUBLISH_CONFIRMATION: ${{ needs.resolve.outputs.publish_confirmation }}
+          RELEASE_FAULT_CASE: ${{ needs.resolve.outputs.fault_case }}
+          RELEASE_SOURCE_MODE: ${{ needs.resolve.outputs.release_source_mode }}
           DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
           GITHUB_TOKEN: ${{ github.token }}
           DOC_AGENT_RELEASE_NOTES_DRAFT_URL: ${{ secrets.DOC_AGENT_RELEASE_NOTES_DRAFT_URL }}
@@ -115,8 +213,9 @@ jobs:
         shell: bash
         env:
           PREPARE_OUTCOME: ${{ steps.prepare.outcome }}
-          DRY_RUN: ${{ inputs.dry_run }}
-          FAULT_CASE: ${{ inputs.fault_case }}
+          DRY_RUN: ${{ needs.resolve.outputs.dry_run }}
+          FAULT_CASE: ${{ needs.resolve.outputs.fault_case }}
+          RELEASE_SOURCE_MODE: ${{ needs.resolve.outputs.release_source_mode }}
           CURRENT_TAG: ${{ steps.prepare.outputs.current_tag }}
           PREVIOUS_TAG: ${{ steps.prepare.outputs.previous_tag }}
           TARGET_SHA: ${{ steps.prepare.outputs.target_sha }}
@@ -128,12 +227,13 @@ jobs:
             echo "- prepare_outcome: ${PREPARE_OUTCOME}"
             echo "- dry_run: ${DRY_RUN}"
             echo "- fault_case: ${FAULT_CASE}"
+            echo "- release_source_mode: ${RELEASE_SOURCE_MODE}"
             echo "- range: ${PREVIOUS_TAG}...${CURRENT_TAG}"
             echo "- target: ${TARGET_SHA}"
             echo "- evidence_scope: whole_repository"
             echo "- docs_action: ${DOCS_ACTION}"
             echo
-            echo "The artifact contains README.md, github-release-notes.md/release-notes.md, evidence.json, release-notes-draft.json, docs-preview.md/json, quality-report.json, and release-contract.json."
+            echo "The artifact contains README.md, github-release-notes.md/release-notes.md, release-notes-source.json, evidence.json, release-notes-draft.json, docs-preview.md/json, quality-report.json, and release-contract.json."
             if [ "${PREPARE_OUTCOME}" != "success" ]; then
               echo
               echo "Preparation failed closed. Review the redacted quality-report.json in the uploaded artifact."
@@ -145,8 +245,14 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   build:
-    if: ${{ !inputs.dry_run }}
-    needs: prepare
+    if: >-
+      ${{
+        needs.resolve.outputs.eligible == 'true' &&
+        needs.resolve.outputs.dry_run != 'true'
+      }}
+    needs:
+      - resolve
+      - prepare
     permissions:
       contents: read
     timeout-minutes: 30
@@ -191,8 +297,13 @@ jobs:
           retention-days: 14
 
   release:
-    if: ${{ !inputs.dry_run }}
+    if: >-
+      ${{
+        needs.resolve.outputs.eligible == 'true' &&
+        needs.resolve.outputs.dry_run != 'true'
+      }}
     needs:
+      - resolve
       - prepare
       - build
     runs-on: ubuntu-22.04
@@ -205,6 +316,10 @@ jobs:
           ref: ${{ needs.prepare.outputs.target_sha }}
           fetch-depth: 0
           persist-credentials: true
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
 
       - name: Fetch release tags
         shell: bash
@@ -227,6 +342,9 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           CURRENT_TAG: ${{ needs.prepare.outputs.current_tag }}
           TARGET_SHA: ${{ needs.prepare.outputs.target_sha }}
-          RECOVER_EXISTING_RELEASE: ${{ inputs.recover_existing_release }}
-          RELEASE_VERSION: ${{ inputs.version }}
+          RECOVER_EXISTING_RELEASE: ${{ needs.resolve.outputs.recover_existing_release }}
+          RELEASE_VERSION: ${{ needs.resolve.outputs.version }}
+          RELEASE_SOURCE_MODE: ${{ needs.resolve.outputs.release_source_mode }}
+          NPM_VERSION_EXISTS: ${{ needs.resolve.outputs.npm_version_exists }}
+          NPM_GIT_HEAD: ${{ needs.resolve.outputs.npm_git_head }}
         run: bash .github/scripts/publish-cli-release.sh

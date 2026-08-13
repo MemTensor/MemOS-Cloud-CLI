@@ -3,35 +3,39 @@
 This repository uses a standalone-release variant of the MemOS local-plugin
 release flow:
 
-> No next CLI version has been selected by this automation. As of the
-> 2026-07-28 audit, `main` and npm are still `1.0.6`, and the formal repository
-> has no tags or GitHub Releases. Merging this automation creates neither a
-> version nor a tag. Wait for the CLI owner to choose `<next-version>`, land
-> its actual changes, and update all three version sources before running a
-> real dry run.
+> This automation never invents the next CLI version and does not require a
+> special release branch. A release owner chooses `<next-version>` and updates
+> all three version sources in the normal reviewed code PR.
 
-1. A release operator runs **MemOS CLI — Release** with `version`,
-   `target_ref`, `dry_run`, and the draft/recovery safety inputs.
-2. A dry run compares the previous SemVer tag with the target commit, requests
-   three bilingual Plugin changelog candidates from Doc Agent, validates the
-   selected candidate, and uploads a review artifact.
-3. A real run requires the exact confirmation `PUBLISH v<version>`, preserves
-   the existing Linux and Windows builds, creates the version tag, and creates
-   a Draft GitHub Release whose body is GitHub-generated `What's Changed`.
-4. A Draft Release is mandatory. Direct publication is rejected so a release
+1. Every PR closed against `main` is classified. Unmerged PRs, forks, and PRs
+   with no CLI version change succeed without starting a release.
+2. A same-repository PR merged into `main` creates a Draft Release only when all
+   three version files were changed by that PR, agree on one strict SemVer, and
+   increase from the pre-merge version. Partial updates, mismatches, downgrades,
+   or an existing npm version fail closed before any tag or Release mutation.
+3. The automatic and manual paths compare the previous SemVer tag with the target commit, request
+   three bilingual Plugin changelog candidates from Doc Agent, validate the
+   selected candidate, and upload a review artifact.
+4. The workflow preserves the existing Linux and Windows builds, creates the
+   immutable version tag, and creates a Draft GitHub Release. Its body uses an
+   optional reviewed `.github/release-notes/vX.Y.Z.md`; when that file is absent,
+   it uses the validated Doc Agent draft. Both paths append GitHub's complete
+   `What's Changed` list.
+5. A Draft Release is mandatory. Direct publication is rejected so a release
    owner must review the title, body, tag range, and assets first. Publishing
    that draft emits
    `release.published`.
-5. Doc Agent maps `MemTensor/MemOS-Cloud-CLI` to `memos-cloud-cli`, compares the
+6. Doc Agent maps `MemTensor/MemOS-Cloud-CLI` to `memos-cloud-cli`, compares the
    complete repository between the previous and current tags, and creates a
    MemOS-Docs Draft PR only after its evidence and bilingual quality gates pass.
-6. The docs pipeline may proceed through pre and gray. Production remains a
+7. The docs pipeline may proceed through pre and gray. Production remains a
    manual decision after the CLI owner reviews gray.
 
 The GitHub Release body and the website copy intentionally have different
-roles. GitHub's body is the public engineering-oriented `What's Changed`.
-Doc Agent creates the shorter Chinese and English Plugin tab copy from the
-same Git tag range after `release.published`.
+roles. The Draft body is a human-reviewable public summary plus the complete
+`What's Changed` list. After `release.published`, Doc Agent does not blindly
+trust that editable body: it rebuilds evidence from the same Git tag range and
+creates the shorter Chinese and English Plugin tab copy.
 
 ## Verified v1.0.6 baseline
 
@@ -221,6 +225,8 @@ The `memos-cloud-cli-release-inspection` artifact contains:
   and zero-side-effect statement.
 - `github-release-notes.md`: preview of the public `What's Changed` body.
 - `release-notes.md`: compatibility alias of the same public body preview.
+- `release-notes-source.json`: records whether the public summary came from the
+  reviewed version file or Doc Agent, plus its target commit and version range.
 - `evidence.json`: redacted whole-repository commits, changed files, PR
   references, diff statistics, and bounded patch excerpts.
 - `release-notes-draft.json`: accepted bilingual Plugin changelog items with
@@ -283,34 +289,69 @@ and has no access to Doc Agent secrets.
 
 ## Real release procedure
 
-After the dry-run artifact is approved and the release commit is on `main`,
-run the owner-approved version:
+The default path follows the existing CLI development habit: use any normal
+same-repository branch, update the release-ready code and all three version
+files in one reviewed PR, then merge it into `main`.
 
 ```text
-version: <next-version>
-target_ref: main
-dry_run: false
-create_draft_release: true
-recover_existing_release: false
-fault_case: none
-publish_confirmation: PUBLISH v<next-version>
+package.json
+pyproject.toml
+src/memos_cli/__init__.py
 ```
+
+All three files must contain the same new SemVer. The merged workflow compares
+the immutable pre-merge base SHA with the PR merge SHA. If the version did not
+change, it succeeds and skips release work. If the version transition is valid,
+it automatically:
+
+```text
+collects evidence
+-> validates or generates Release Notes
+-> builds the existing Linux and Windows assets
+-> creates immutable v<next-version> tag
+-> creates GitHub Draft Release
+```
+
+It never publishes the Draft automatically. A release owner must inspect its
+body, tag range, and assets, then click Publish. The manual workflow remains
+available for pre-merge dry runs and explicit recovery.
 
 The workflow:
 
-- refuses live releases from a ref other than `main`;
-- refuses live dispatches whose workflow ref or target commit is not the
-  current protected default branch;
+- ignores closed-without-merge PRs, fork PRs, and non-`main` PRs;
+- succeeds without release side effects when a merged PR did not change the CLI version;
+- requires `package.json`, `pyproject.toml`, and
+  `src/memos_cli/__init__.py` to all be changed by the same PR and contain the
+  same newer strict SemVer;
+- rejects SemVer build metadata and version downgrades in the automatic path;
+- checks npm before automatic GitHub metadata creation. If the version already
+  exists, it stops and requires explicit manual recovery instead of guessing or
+  republishing;
+- does not publish npm or upload OSS binaries in this changelog/Draft workflow;
+  those distribution steps remain the CLI release owner's separate responsibility
+  until the repository's full Build & Publish contract is deliberately restored;
+- runs workflow code from the protected default branch and requires the merged
+  release commit to be contained in `main`;
+- keeps manual live dispatches restricted to the current `main` head;
 - refuses `create_draft_release=false`; every live run must stop at a Draft
   Release for manual review;
 - refuses a mismatched version file;
+- refuses a version that is not newer than the latest existing SemVer tag;
 - refuses a missing previous SemVer tag;
 - refuses to move an existing tag to another commit;
-- rechecks remote `refs/heads/main` immediately before creating or updating a
-  Draft Release, so a main branch advance during build requires a new dry run;
+- rechecks remote `refs/heads/main` immediately before mutation. A manual run
+  still requires exact equality; a trusted release-PR run remains bound to its
+  reviewed merge commit and only tolerates later main commits when that merge
+  commit is still an ancestor of current `main`;
 - builds only the two targets already supported by this repository;
 - creates or safely resumes a Draft Release;
 - leaves an already-published Release unchanged.
+
+A version such as `1.0.7-beta.1` follows the same three-file rule and produces
+a GitHub Prerelease Draft. Publishing it is an explicit beta release decision;
+Doc Agent must acknowledge and skip the formal Plugin changelog/pre/gray path.
+A later stable `1.0.7` compares against the previous stable tag so beta-only
+history does not become the stable website baseline.
 
 Evidence curation also ignores changes that are clearly release machinery
 rather than CLI behavior, including `fix(ci):` / `fix(build):` scopes and
@@ -319,10 +360,20 @@ paths. These commits remain visible in raw evidence but do not force a Plugin
 tab entry.
 
 If a prior run pushed the correct tag but failed before creating the GitHub
-Release, the normal rerun stops. After confirming that the tag points to the
-intended commit and that no Release exists, rerun once with
-`recover_existing_release=true`. This explicit recovery prevents an old tag
-from being backfilled as a new Release by accident.
+Release, use GitHub's **Re-run jobs** on the same automatic release run. The
+second run is treated as explicit recovery only when the immutable tag still
+points to the same reviewed merge commit. For a manual release, first confirm
+that the tag points to the intended current-main commit and that no Release
+exists, then rerun once with `recover_existing_release=true`. Neither path
+moves or deletes a tag.
+
+> Important distribution boundary: this workflow automates evidence, binary
+> build verification, the Git tag, and the Draft GitHub Release. It does not
+> upload the binaries to OSS and does not run `npm publish`. Do not treat the
+> existence of the Draft Release as proof that `npm install` can already install
+> that version. The CLI owner must keep the existing npm/OSS publication step in
+> the release checklist unless a separately reviewed PR integrates the complete
+> distribution workflow and its credentials.
 
 Review the Draft Release and its assets, then publish it manually. That manual
 publication is what sends `release.published` to Doc Agent.

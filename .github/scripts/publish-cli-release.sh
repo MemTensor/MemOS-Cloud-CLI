@@ -6,14 +6,71 @@ set -euo pipefail
 : "${TARGET_SHA:?TARGET_SHA is required}"
 : "${RECOVER_EXISTING_RELEASE:?RECOVER_EXISTING_RELEASE is required}"
 : "${RELEASE_VERSION:?RELEASE_VERSION is required}"
+: "${RELEASE_SOURCE_MODE:?RELEASE_SOURCE_MODE is required}"
 : "${GITHUB_REPOSITORY:?GITHUB_REPOSITORY is required}"
 : "${RUNNER_TEMP:?RUNNER_TEMP is required}"
 : "${GH_TOKEN:?GH_TOKEN is required}"
+
+npm_version_exists="${NPM_VERSION_EXISTS:-false}"
+npm_git_head="${NPM_GIT_HEAD:-}"
+package_name="@memtensor/memos-cloud-cli"
+if [[ "${npm_version_exists}" != "true" && "${npm_version_exists}" != "false" ]]; then
+  echo "::error::NPM_VERSION_EXISTS must be true or false."
+  exit 1
+fi
+
+query_live_npm_state() {
+  local attempt status payload parsed
+  local lookup_log="${RUNNER_TEMP}/memos-cli-npm-state-$$.log"
+  live_npm_git_head=""
+  for ((attempt = 1; attempt <= 3; attempt += 1)); do
+    if payload="$(npm view "${package_name}@${RELEASE_VERSION}" version gitHead --json 2>"${lookup_log}")"; then
+      status=0
+    else
+      status=$?
+    fi
+    if [[ "${status}" == 0 ]]; then
+      if parsed="$(node -e '
+        const payload = JSON.parse(process.argv[1] || "{}");
+        if (!payload || typeof payload !== "object" || Array.isArray(payload)) process.exit(2);
+        process.stdout.write(String(payload.gitHead || ""));
+      ' "${payload}" 2>>"${lookup_log}")"; then
+        status=0
+      else
+        status=$?
+      fi
+      if [[ "${status}" != 0 ]]; then
+        sed -n '1,80p' "${lookup_log}" >&2
+        echo "::error::npm returned an invalid state payload for ${package_name}@${RELEASE_VERSION}."
+        return 2
+      fi
+      live_npm_git_head="${parsed}"
+      return 0
+    fi
+    if grep -Eiq "E404|404 Not Found|No match found|is not in this registry" "${lookup_log}"; then
+      return 1
+    fi
+    if [[ "${attempt}" == 3 ]]; then
+      sed -n '1,80p' "${lookup_log}" >&2
+      echo "::error::Failed to recheck ${package_name}@${RELEASE_VERSION} immediately before GitHub release mutation."
+      return 2
+    fi
+    retry_sleep "${attempt}"
+  done
+}
 
 git config --local user.name "github-actions[bot]"
 git config --local user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
 declare -a release_assets
+
+case "${RELEASE_SOURCE_MODE}" in
+  manual_dispatch|trusted_version_pr_merge) ;;
+  *)
+    echo "::error::Unknown RELEASE_SOURCE_MODE: ${RELEASE_SOURCE_MODE}"
+    exit 1
+    ;;
+esac
 
 release_retry_attempts="${RELEASE_RETRY_ATTEMPTS:-6}"
 release_retry_sleep_seconds="${RELEASE_RETRY_SLEEP_SECONDS:-}"
@@ -224,12 +281,20 @@ collect_release_assets() {
   fi
 }
 
-ensure_target_is_current_main() {
+ensure_target_is_allowed_main_source() {
   local remote_main_sha
   remote_main_sha="$(resolve_remote_main)"
   if [[ -z "${remote_main_sha}" ]]; then
     echo "::error::Unable to resolve refs/heads/main immediately before release mutation."
     exit 1
+  fi
+  if [[ "${RELEASE_SOURCE_MODE}" == "trusted_version_pr_merge" ]]; then
+    git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+    if ! git merge-base --is-ancestor "${TARGET_SHA}" "${remote_main_sha}"; then
+      echo "::error::Release PR merge target ${TARGET_SHA} is not contained in current main ${remote_main_sha}. Refusing to create or update a Draft Release."
+      exit 1
+    fi
+    return 0
   fi
   if [[ "${remote_main_sha}" != "${TARGET_SHA}" ]]; then
     echo "::error::main moved to ${remote_main_sha} after release inspection; expected ${TARGET_SHA}. Rerun dry_run=true for the new main before creating or updating a Draft Release."
@@ -243,6 +308,42 @@ if [[ ! -s "${release_notes_file}" ]]; then
   exit 1
 fi
 collect_release_assets
+
+set +e
+query_live_npm_state
+live_npm_status=$?
+set -e
+if [[ "${live_npm_status}" == 2 ]]; then
+  exit 1
+fi
+if [[ "${npm_version_exists}" == "false" && "${live_npm_status}" == 0 ]]; then
+  echo "::error::npm state changed after release inspection: ${package_name}@${RELEASE_VERSION} now exists. Rerun the workflow so recovery can verify its immutable gitHead."
+  exit 1
+fi
+if [[ "${npm_version_exists}" == "true" && "${live_npm_status}" != 0 ]]; then
+  echo "::error::npm state changed after release inspection: expected ${package_name}@${RELEASE_VERSION} to exist. Refusing recovery."
+  exit 1
+fi
+if [[ "${npm_version_exists}" == "true" && "${live_npm_git_head}" != "${npm_git_head}" ]]; then
+  echo "::error::npm gitHead changed after release inspection: expected ${npm_git_head}, got ${live_npm_git_head:-missing}. Refusing recovery."
+  exit 1
+fi
+
+if [[ "${npm_version_exists}" == "true" ]]; then
+  if [[ "${RECOVER_EXISTING_RELEASE}" != "true" ]]; then
+    echo "::error::npm already contains ${RELEASE_VERSION}; explicit recover_existing_release=true is required before any GitHub release mutation."
+    exit 1
+  fi
+  if [[ ! "${npm_git_head}" =~ ^[0-9a-fA-F]{40}$ ]]; then
+    echo "::error::npm already contains ${RELEASE_VERSION}, but npm gitHead is missing or invalid. Refusing recovery."
+    exit 1
+  fi
+  if [[ "${npm_git_head}" != "${TARGET_SHA}" ]]; then
+    echo "::error::npm ${RELEASE_VERSION} points to ${npm_git_head}, expected immutable release target ${TARGET_SHA}. Refusing recovery."
+    exit 1
+  fi
+  echo "::notice::Verified existing npm ${RELEASE_VERSION} at ${TARGET_SHA}; continuing explicit GitHub metadata recovery."
+fi
 
 remote_tag_sha="$(resolve_remote_tag false)"
 if [[ -n "${remote_tag_sha}" && "${remote_tag_sha}" != "${TARGET_SHA}" ]]; then
@@ -288,7 +389,7 @@ if [[ "${release_exists}" == "true" ]]; then
     exit 0
   fi
 
-  ensure_target_is_current_main
+  ensure_target_is_allowed_main_source
   upload_and_update_draft
   lookup_release true true
   if ! validate_draft_release; then
@@ -296,7 +397,7 @@ if [[ "${release_exists}" == "true" ]]; then
     exit 1
   fi
 else
-  ensure_target_is_current_main
+  ensure_target_is_allowed_main_source
   if [[ -z "${remote_tag_sha}" ]]; then
     git tag "${CURRENT_TAG}" "${TARGET_SHA}"
     tag_push_log="${RUNNER_TEMP}/memos-cli-tag-push-$$.log"
