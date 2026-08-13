@@ -4,6 +4,7 @@ on:
   pull_request:
     paths:
       - ".github/scripts/**"
+      - ".github/release-notes/**"
       - ".github/workflows/**"
       - "docs/release-changelog-*.md"
       - "package.json"
@@ -14,6 +15,7 @@ on:
       - main
     paths:
       - ".github/scripts/**"
+      - ".github/release-notes/**"
       - ".github/workflows/**"
       - "docs/release-changelog-*.md"
       - "package.json"
@@ -49,7 +51,7 @@ jobs:
       - name: Test changelog evidence and safety guards
         env:
           RELEASE_TEST_EXPORT_DIR: ${{ runner.temp }}/memos-cloud-cli-release-contract-check
-        run: node --test .github/scripts/prepare-cli-release.test.mjs
+        run: node --test .github/scripts/*.test.mjs
 
       - name: Check workflow and script formatting
         shell: bash
@@ -69,6 +71,7 @@ jobs:
             git show --check --format= "${HEAD_SHA}"
           fi
           node --check .github/scripts/prepare-cli-release.mjs
+          node --check .github/scripts/resolve-cli-release.mjs
           bash -n .github/scripts/publish-cli-release.sh
           bash -n scripts/build-binary.sh
 

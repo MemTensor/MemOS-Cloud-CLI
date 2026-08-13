@@ -33,12 +33,22 @@ export const RELEASE_FAULT_CASES = [
   "thirteen_items",
   "too_long",
 ];
+export const RELEASE_SOURCE_MODES = [
+  "manual_dispatch",
+  "trusted_version_pr_merge",
+];
 export const RELEASE_NOTE_METHODS = [
+  {
+    source: "reviewed-release-notes-file",
+    url: "https://github.com/MemTensor/memmy-agent/tree/main/.github/release-notes",
+    applied_as:
+      "Prefer an optional .github/release-notes/vX.Y.Z.md reviewed in the release PR; otherwise use the validated Doc Agent draft.",
+  },
   {
     source: "github-auto-generated-release-notes",
     url: "https://docs.github.com/en/repositories/releasing-projects-on-github/automatically-generated-release-notes",
     applied_as:
-      "Keep the public CLI Release body as GitHub-generated whole-repository What's Changed notes.",
+      "Append GitHub-generated whole-repository What's Changed notes for a complete auditable change list.",
   },
   {
     source: "keep-a-changelog",
@@ -96,6 +106,15 @@ function tryGit(args) {
     return sh(args);
   } catch {
     return "";
+  }
+}
+
+function gitSucceeds(args) {
+  try {
+    sh(args);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -234,8 +253,38 @@ export function findPreviousTag(version, currentTag, tags) {
     .sort((a, b) => compareSemver(b.tag, a.tag))[0]?.tag || "";
 }
 
-export function validatePublishConfirmation({ dryRun, version, confirmation }) {
+export function validateReleaseVersionOrder(version, currentTag, tags) {
+  const target = cleanVersion(version);
+  const latest = tags
+    .map((tag) => String(tag || "").trim())
+    .filter((tag) => tag && tag !== currentTag && parseSemver(tag))
+    .sort((left, right) => compareSemver(right, left))[0];
+  if (latest && compareSemver(target, latest) <= 0) {
+    fail(
+      `${currentTag} must be newer than the latest existing SemVer tag ${latest}; refusing an out-of-order release.`,
+    );
+  }
+  return latest || "";
+}
+
+export function validateReleaseSourceMode(raw) {
+  const value = String(raw || "manual_dispatch").trim() || "manual_dispatch";
+  if (!RELEASE_SOURCE_MODES.includes(value)) {
+    fail(`unknown release source mode: ${value}`);
+  }
+  return value;
+}
+
+export function validatePublishConfirmation({
+  dryRun,
+  version,
+  confirmation,
+  releaseSourceMode = "manual_dispatch",
+}) {
   if (String(dryRun) === "true") return;
+  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_version_pr_merge") {
+    return;
+  }
   const expected = `PUBLISH v${cleanVersion(version)}`;
   if (String(confirmation || "").trim() !== expected) {
     fail(`dry_run=false requires publish_confirmation to exactly equal: ${expected}`);
@@ -254,8 +303,18 @@ export function validateDraftFirstRelease({
   }
 }
 
-export function validateReleaseTarget({ dryRun, targetRef }) {
+export function validateReleaseTarget({
+  dryRun,
+  targetRef,
+  releaseSourceMode = "manual_dispatch",
+}) {
   if (String(dryRun) === "true") return;
+  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_version_pr_merge") {
+    if (!/^[0-9a-f]{40}$/i.test(String(targetRef || "").trim())) {
+      fail("trusted release PR merge target must be its 40-character merge commit SHA.");
+    }
+    return;
+  }
   if (String(targetRef || "main").trim() !== "main") {
     fail("dry_run=false requires target_ref to be exactly main.");
   }
@@ -267,8 +326,19 @@ export function validateLiveReleaseSource({
   defaultBranch = "main",
   targetSha,
   defaultBranchSha,
+  targetIsDefaultBranchAncestor = false,
+  releaseSourceMode = "manual_dispatch",
 }) {
   const branch = String(defaultBranch || "main").trim() || "main";
+  const sourceMode = validateReleaseSourceMode(releaseSourceMode);
+  if (sourceMode === "trusted_version_pr_merge") {
+    if (!targetIsDefaultBranchAncestor) {
+      fail(
+        `trusted release PR merge target must be contained in origin/${branch}; refusing a commit outside the protected default branch.`,
+      );
+    }
+    return;
+  }
   if (
     String(workflowRef || "").trim() &&
     String(workflowRef).trim() !== `refs/heads/${branch}`
@@ -680,7 +750,8 @@ export function collectCliEvidence({
     target_surface: "memos_docs_plugin_changelog",
     release_context: {
       release_kind: "standalone_repository",
-      public_release_body: "github_generated_whats_changed",
+      public_release_body:
+        "optional_reviewed_file_or_validated_doc_agent_draft_plus_github_whats_changed",
       docs_product_extraction: "whole_tag_range_after_release_published",
     },
     release_note_methodology: RELEASE_NOTE_METHODS,
@@ -902,6 +973,78 @@ export async function generateGitHubReleaseNotes({
     }
     return fallback(sanitizeError(error?.message || error));
   }
+}
+
+export function reviewedReleaseNotesAtRef({ targetSha, currentTag }) {
+  const path = `.github/release-notes/${currentTag}.md`;
+  const body = tryGit(["show", `${targetSha}:${path}`]);
+  if (!body) return null;
+  if (body.length < 40) {
+    fail(`${path} is too short to be a useful reviewed Release note.`);
+  }
+  if (body.length > 50000) {
+    fail(`${path} exceeds the 50,000 character Release note limit.`);
+  }
+  if (!/^##\s+\S+/m.test(body)) {
+    fail(`${path} must contain at least one level-two Markdown heading.`);
+  }
+  if (/\b(?:TODO|TBD|PLACEHOLDER)\b/i.test(body)) {
+    fail(`${path} still contains TODO/TBD/PLACEHOLDER text.`);
+  }
+  assertNoSensitiveContent(body, path);
+  return { path, body: `${body.trim()}\n` };
+}
+
+function docAgentReleaseNotesBody(draft) {
+  const output = ["## Changelog", ""];
+  for (const category of RELEASE_CATEGORIES) {
+    const items = draft.release_items.filter(
+      (item) => item.category === category,
+    );
+    if (!items.length) continue;
+    output.push(`### ${category}`, "");
+    for (const item of items) output.push(`- ${item.text_en}`);
+    output.push("");
+  }
+  return draft.release_items.length ? output.join("\n").trim() : "";
+}
+
+export function composePublicReleaseNotes({
+  githubNotes,
+  draft,
+  reviewedNotes = null,
+}) {
+  const generatedBody = String(githubNotes?.body || "").trim();
+  if (!generatedBody) fail("GitHub What's Changed notes are empty.");
+  const docAgentBody = docAgentReleaseNotesBody(draft);
+  let source;
+  let primaryBody;
+  let reviewedPath = "";
+  if (reviewedNotes) {
+    source = "reviewed-file-plus-github-whats-changed";
+    primaryBody = reviewedNotes.body.trim();
+    reviewedPath = reviewedNotes.path;
+  } else if (docAgentBody) {
+    source = "validated-doc-agent-plus-github-whats-changed";
+    primaryBody = docAgentBody;
+  } else {
+    source = "github-whats-changed-after-doc-agent-skip";
+    primaryBody = "";
+  }
+  const body = [primaryBody, generatedBody].filter(Boolean).join("\n\n---\n\n");
+  assertNoSensitiveContent(body, "composed public Release notes");
+  return {
+    source,
+    name: String(githubNotes?.name || "MemOS CLI Release"),
+    body: `${body.trim()}\n`,
+    warning: String(githubNotes?.warning || ""),
+    reviewed_path: reviewedPath,
+    components: [
+      reviewedNotes ? "reviewed_release_notes_file" : "",
+      !reviewedNotes && docAgentBody ? "validated_doc_agent_draft" : "",
+      "github_whats_changed",
+    ].filter(Boolean),
+  };
 }
 
 export function normalizeDraft(raw) {
@@ -1581,7 +1724,12 @@ function releaseContract(repo) {
     source_repo: repo,
     release_trigger: "release.published",
     required_webhook_event: "release",
-    public_release_body: "github_generated_whats_changed",
+    draft_release_trigger:
+      "same-repository main PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
+    public_release_body:
+      "optional_reviewed_file_or_validated_doc_agent_draft_plus_github_whats_changed",
+    reviewed_release_notes_path: ".github/release-notes/v<version>.md",
+    reviewed_release_notes_optional: true,
     docs_evidence: "whole_tag_range",
     evidence_scope: "whole_repository",
     product_paths: ["**"],
@@ -1590,8 +1738,13 @@ function releaseContract(repo) {
       "content/en/plugin-changelog.yml",
     ],
     live_release_policy: {
-      target_ref: "main",
-      exact_confirmation: "PUBLISH v<version>",
+      default_entry:
+        "automatic same-repository main PR merge with an all-three-file SemVer increase",
+      manual_target_ref: "main",
+      trusted_version_pr_target: "merged version PR commit on main",
+      manual_exact_confirmation: "PUBLISH v<version>",
+      automatic_merge_confirmation:
+        "same-repository merged PR plus a validated three-file SemVer increase",
       creates_draft_release: true,
       manual_publish_required: true,
       direct_publish_allowed: false,
@@ -1622,6 +1775,7 @@ function inspectionReadme({
     "## Decision",
     "",
     `- inspection_kind: ${state.inspectionKind}`,
+    `- release_source_mode: ${state.releaseSourceMode}`,
     `- quality_ok: ${Boolean(draft.validation_report?.ok)}`,
     "- publish_blocked: false",
     `- docs_action: ${preview.docs_action}`,
@@ -1656,11 +1810,15 @@ function inspectionReadme({
       coverage.missing_required_count || 0
     }`,
     `- repair_attempt_count: ${draft.repair_attempt_count || 0}`,
-    `- github_release_notes_source: ${releaseNotes.source}`,
+    `- release_notes_source: ${releaseNotes.source}`,
+    `- reviewed_release_notes_path: ${
+      releaseNotes.reviewed_path || "<not provided; Doc Agent generated the summary>"
+    }`,
     "",
     "## Review files",
     "",
     "- `github-release-notes.md` / `release-notes.md`: public GitHub Release body preview.",
+    "- `release-notes-source.json`: public body provenance, components, target commit, and version range.",
     "- `evidence.json`: redacted whole-repository tag-range evidence.",
     "- `release-notes-draft.json`: accepted bilingual items and internal source refs.",
     "- `docs-preview.md` / `docs-preview.json`: Plugin tab preview.",
@@ -1752,6 +1910,15 @@ function writeBlockedInspection(root, state, error) {
     phase: state.phase || "prepare",
     error: reason,
   });
+  writeJson(join(root, "release-notes-source.json"), {
+    source: "blocked_before_release_notes",
+    reviewed_path: "",
+    components: [],
+    target_sha: state.targetSha || "",
+    current_tag: state.currentTag || "",
+    previous_tag: state.previousTag || "",
+    needs_review: true,
+  });
   writeJson(join(root, "quality-report.json"), {
     ok: false,
     needs_review: true,
@@ -1764,6 +1931,7 @@ function writeBlockedInspection(root, state, error) {
     evidence_scope: "whole_repository",
     product_paths: ["**"],
     inspection_kind: state.inspectionKind || "release_preview",
+    release_source_mode: state.releaseSourceMode || "manual_dispatch",
     existing_tag_status: state.existingTagStatus || "unknown",
     existing_tag_sha: state.existingTagSha || "",
     phase: state.phase || "prepare",
@@ -1791,6 +1959,7 @@ async function main() {
       String(process.env.GITHUB_REPOSITORY || "").trim() ||
       "MemTensor/MemOS-Cloud-CLI",
     phase: "validate-inputs",
+    releaseSourceMode: "manual_dispatch",
     inspectionKind:
       String(process.env.RELEASE_CONTRACT_FIXTURE || "").toLowerCase() ===
       "true"
@@ -1803,6 +1972,9 @@ async function main() {
     const currentTag = `v${version}`;
     const targetRef = String(process.env.TARGET_REF || "main").trim() || "main";
     const dryRun = String(process.env.DRY_RUN || "true").toLowerCase();
+    const releaseSourceMode = validateReleaseSourceMode(
+      process.env.RELEASE_SOURCE_MODE,
+    );
     const faultCase = validateFaultCase({
       dryRun,
       faultCase: process.env.RELEASE_FAULT_CASE,
@@ -1810,16 +1982,18 @@ async function main() {
     state.faultCase = faultCase;
     state.currentTag = currentTag;
     state.targetRefInput = targetRef;
+    state.releaseSourceMode = releaseSourceMode;
     validatePublishConfirmation({
       dryRun,
       version,
       confirmation: process.env.PUBLISH_CONFIRMATION,
+      releaseSourceMode,
     });
     validateDraftFirstRelease({
       dryRun,
       createDraftRelease: process.env.CREATE_DRAFT_RELEASE,
     });
-    validateReleaseTarget({ dryRun, targetRef });
+    validateReleaseTarget({ dryRun, targetRef, releaseSourceMode });
     validateDocAgentConfiguration({
       allowOffline:
         String(process.env.ALLOW_OFFLINE_DOCS_PREVIEW || "").toLowerCase() ===
@@ -1840,12 +2014,23 @@ async function main() {
     if (dryRun !== "true" && !defaultBranchSha) {
       fail(`cannot resolve origin/${defaultBranch} for a live release.`);
     }
+    const targetIsDefaultBranchAncestor = Boolean(
+      defaultBranchSha &&
+        gitSucceeds([
+          "merge-base",
+          "--is-ancestor",
+          target.sha,
+          defaultBranchSha,
+        ]),
+    );
     validateLiveReleaseSource({
       dryRun,
       workflowRef: process.env.GITHUB_REF,
       defaultBranch,
       targetSha: target.sha,
       defaultBranchSha,
+      targetIsDefaultBranchAncestor,
+      releaseSourceMode,
     });
     validateVersionSources(version, versionSources(target.sha));
     const existingCurrentTag = tryGit([
@@ -1865,6 +2050,7 @@ async function main() {
       );
     }
     const tags = lines(tryGit(["tag", "--list", "v*"]));
+    validateReleaseVersionOrder(version, currentTag, tags);
     const previousTag = findPreviousTag(version, currentTag, tags);
     if (!previousTag) {
       fail(
@@ -1892,22 +2078,41 @@ async function main() {
     const evidenceFile = join(root, "evidence.json");
     writeJson(evidenceFile, evidence);
 
-    state.phase = "generate-github-release-notes";
-    const releaseNotes = await generateGitHubReleaseNotes({
+    state.phase = "generate-github-whats-changed";
+    const githubNotes = await generateGitHubReleaseNotes({
       repo: state.repo,
       currentTag,
       targetSha: target.sha,
       previousTag,
     });
-    const releaseNotesFile = join(root, "github-release-notes.md");
-    writeFileSync(releaseNotesFile, releaseNotes.body, "utf8");
-    writeFileSync(join(root, "release-notes.md"), releaseNotes.body, "utf8");
 
     state.phase = "draft-plugin-changelog";
     const draft = await requestDocAgentDraft(evidence);
     if (!draft.validation_report?.ok) {
       fail("CLI changelog draft did not pass deterministic validation.");
     }
+    state.phase = "compose-public-release-notes";
+    const reviewedNotes = reviewedReleaseNotesAtRef({
+      targetSha: target.sha,
+      currentTag,
+    });
+    const releaseNotes = composePublicReleaseNotes({
+      githubNotes,
+      draft,
+      reviewedNotes,
+    });
+    const releaseNotesFile = join(root, "github-release-notes.md");
+    writeFileSync(releaseNotesFile, releaseNotes.body, "utf8");
+    writeFileSync(join(root, "release-notes.md"), releaseNotes.body, "utf8");
+    writeJson(join(root, "release-notes-source.json"), {
+      source: releaseNotes.source,
+      reviewed_path: releaseNotes.reviewed_path,
+      components: releaseNotes.components,
+      target_sha: target.sha,
+      current_tag: currentTag,
+      previous_tag: previousTag,
+      needs_review: Boolean(draft.needs_review),
+    });
     const preview = buildDocsPreview(draft, evidence);
 
     state.phase = "write-inspection";
@@ -1945,6 +2150,7 @@ async function main() {
       evidence_scope: "whole_repository",
       product_paths: ["**"],
       inspection_kind: state.inspectionKind,
+      release_source_mode: state.releaseSourceMode,
       existing_tag_status: state.existingTagStatus,
       existing_tag_sha: state.existingTagSha,
       has_product_changes: evidence.has_product_changes,
@@ -1953,6 +2159,8 @@ async function main() {
       docs_action: preview.docs_action,
       fault_case: faultCase,
       release_notes_source: releaseNotes.source,
+      release_notes_reviewed_path: releaseNotes.reviewed_path,
+      release_notes_components: releaseNotes.components,
       validation_attempt_count: draft.validation_attempt_count,
       repair_attempt_count: draft.repair_attempt_count,
       validation: draft.validation_report,
@@ -1979,6 +2187,7 @@ async function main() {
     setOutput("target_ref", target.ref);
     setOutput("target_sha", target.sha);
     setOutput("release_notes_file", releaseNotesFile);
+    setOutput("release_notes_source", releaseNotes.source);
     setOutput("docs_action", preview.docs_action);
     setOutput("validation_attempt_count", draft.validation_attempt_count);
     setOutput("repair_attempt_count", draft.repair_attempt_count);

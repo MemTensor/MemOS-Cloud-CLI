@@ -19,6 +19,7 @@ import {
   cleanVersion,
   collectCliEvidence,
   compareSemver,
+  composePublicReleaseNotes,
   docsPreviewMarkdown,
   findPreviousTag,
   generateGitHubReleaseNotes,
@@ -28,6 +29,7 @@ import {
   redact,
   reportFailure,
   requestDocAgentDraft,
+  reviewedReleaseNotesAtRef,
   sourceRefsFromText,
   validateDocAgentConfiguration,
   validateDraftFirstRelease,
@@ -35,7 +37,9 @@ import {
   validateFaultCase,
   validateLiveReleaseSource,
   validatePublishConfirmation,
+  validateReleaseSourceMode,
   validateReleaseTarget,
+  validateReleaseVersionOrder,
   validateVersionSources,
 } from "./prepare-cli-release.mjs";
 
@@ -47,7 +51,6 @@ const PUBLISH_SCRIPT_PATH = join(
   process.cwd(),
   ".github/scripts/publish-cli-release.sh",
 );
-
 function fakeGitHubToken() {
   return `ghp_${"a".repeat(36)}`;
 }
@@ -128,13 +131,35 @@ function runPublishFixture({
   remoteMainSha,
   remoteTagSha = "",
   releaseState = "missing",
+  initialReleaseDelayed = false,
   recover = "false",
   version = "2.0.0",
+  tagVisibilityDelay = 0,
+  tagPushStatus = 0,
+  tagPushMaterializes = true,
+  releaseVisibilityDelay = 0,
+  assetVisibilityDelay = 0,
+  releaseCreateStatus = 0,
+  releaseCreateMaterializes = true,
+  uploadFailures = 0,
+  editFailures = 0,
+  releaseSourceMode = "manual_dispatch",
+  npmVersionExists = "false",
+  npmGitHead = "",
+  liveNpmVersionExists = npmVersionExists,
+  liveNpmGitHead = npmGitHead,
 } = {}) {
   const root = mkdtempSync(join(tmpdir(), "memos-cli-publish-"));
   const mockBin = join(root, "mock-bin");
   const runnerTemp = join(root, "runner-temp");
   const callLog = join(root, "calls.log");
+  const remoteTagState = join(root, "remote-tag-state");
+  const remoteTagLookupCount = join(root, "remote-tag-lookup-count");
+  const releaseStateFile = join(root, "release-state");
+  const releaseLookupCount = join(root, "release-lookup-count");
+  const assetsVisibleFile = join(root, "assets-visible");
+  const uploadCount = join(root, "upload-count");
+  const editCount = join(root, "edit-count");
   const targetSha = "abc1234000000000000000000000000000000000";
   const effectiveRemoteMainSha = remoteMainSha ?? targetSha;
   const currentTag = `v${version}`;
@@ -145,6 +170,10 @@ function runPublishFixture({
     "# What's Changed\n\n- Verified release note.\n",
   );
   write(join(root, "dist/memos-test.tar.gz"), "test archive");
+  if (initialReleaseDelayed && releaseState !== "missing") {
+    write(releaseStateFile, `${releaseState}\n`);
+    write(releaseLookupCount, "0\n");
+  }
   const gitMock = join(mockBin, "git");
   write(
     gitMock,
@@ -156,13 +185,41 @@ function runPublishFixture({
       "  if [[ -n \"${MOCK_REMOTE_MAIN_SHA:-}\" ]]; then",
       "    printf '%s\\trefs/heads/main\\n' \"${MOCK_REMOTE_MAIN_SHA}\"",
       "  fi",
-      "elif [[ \"${1:-}\" == \"ls-remote\" && -n \"${MOCK_REMOTE_TAG_SHA:-}\" ]]; then",
-      "  printf '%s\\trefs/tags/%s\\n' \"${MOCK_REMOTE_TAG_SHA}\" \"${CURRENT_TAG}\"",
+      "elif [[ \"${1:-}\" == \"ls-remote\" && \"${2:-}\" == \"--tags\" ]]; then",
+      "  tag_sha=\"${MOCK_REMOTE_TAG_SHA:-}\"",
+      "  if [[ -s \"${MOCK_REMOTE_TAG_STATE}\" ]]; then",
+      "    lookup_count=0",
+      "    if [[ -s \"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\" ]]; then lookup_count=$(<\"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\"); fi",
+      "    lookup_count=$((lookup_count + 1))",
+      "    printf '%s\\n' \"${lookup_count}\" > \"${MOCK_REMOTE_TAG_LOOKUP_COUNT}\"",
+      "    if [[ \"${lookup_count}\" -gt \"${MOCK_TAG_VISIBILITY_DELAY}\" ]]; then tag_sha=$(<\"${MOCK_REMOTE_TAG_STATE}\"); else tag_sha=''; fi",
+      "  fi",
+      "  if [[ -n \"${tag_sha}\" ]]; then printf '%s\\trefs/tags/%s\\n' \"${tag_sha}\" \"${CURRENT_TAG}\"; fi",
+      "elif [[ \"${1:-}\" == \"push\" && \"${2:-}\" == \"origin\" ]]; then",
+      "  if [[ \"${MOCK_TAG_PUSH_MATERIALIZES}\" == \"true\" ]]; then printf '%s\\n' \"${TARGET_SHA}\" > \"${MOCK_REMOTE_TAG_STATE}\"; fi",
+      "  exit \"${MOCK_TAG_PUSH_STATUS}\"",
       "fi",
       "",
     ].join("\n"),
   );
   chmodSync(gitMock, 0o755);
+  const npmMock = join(mockBin, "npm");
+  write(
+    npmMock,
+    [
+      "#!/usr/bin/env bash",
+      "set -euo pipefail",
+      "printf 'npm %s\\n' \"$*\" >> \"${CALL_LOG}\"",
+      "if [[ \"${MOCK_LIVE_NPM_VERSION_EXISTS}\" == \"true\" ]]; then",
+      "  printf '{\"version\":\"%s\",\"gitHead\":\"%s\"}\\n' \"${RELEASE_VERSION}\" \"${MOCK_LIVE_NPM_GIT_HEAD}\"",
+      "  exit 0",
+      "fi",
+      "echo 'npm error code E404' >&2",
+      "exit 1",
+      "",
+    ].join("\n"),
+  );
+  chmodSync(npmMock, 0o755);
   const ghMock = join(mockBin, "gh");
   write(
     ghMock,
@@ -171,25 +228,51 @@ function runPublishFixture({
       "set -euo pipefail",
       "printf 'gh %s\\n' \"$*\" >> \"${CALL_LOG}\"",
       "if [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"view\" ]]; then",
-      "  case \"${MOCK_RELEASE_STATE}\" in",
+      "  current_state=\"${MOCK_RELEASE_STATE}\"",
+      "  asset_names='memos-test.tar.gz'",
+      "  if [[ -s \"${MOCK_RELEASE_STATE_FILE}\" ]]; then",
+      "    lookup_count=0",
+      "    if [[ -s \"${MOCK_RELEASE_LOOKUP_COUNT}\" ]]; then lookup_count=$(<\"${MOCK_RELEASE_LOOKUP_COUNT}\"); fi",
+      "    lookup_count=$((lookup_count + 1))",
+      "    printf '%s\\n' \"${lookup_count}\" > \"${MOCK_RELEASE_LOOKUP_COUNT}\"",
+      "    if [[ \"${lookup_count}\" -gt \"${MOCK_RELEASE_VISIBILITY_DELAY}\" ]]; then current_state=$(<\"${MOCK_RELEASE_STATE_FILE}\"); else current_state='missing'; fi",
+      "    asset_visible_after=$((MOCK_RELEASE_VISIBILITY_DELAY + MOCK_ASSET_VISIBILITY_DELAY))",
+      "    if [[ \"${lookup_count}\" -le \"${asset_visible_after}\" && ! -e \"${MOCK_ASSETS_VISIBLE_FILE}\" ]]; then asset_names=''; fi",
+      "  fi",
+      "  case \"${current_state}\" in",
       "    missing)",
       "      echo 'release not found' >&2",
       "      exit 1",
       "      ;;",
       "    draft)",
-      "      printf 'true\\tfalse\\thttps://example.invalid/draft\\n'",
+      "      printf 'true\\tfalse\\thttps://example.invalid/draft\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    prerelease-draft)",
-      "      printf 'true\\ttrue\\thttps://example.invalid/draft\\n'",
+      "      printf 'true\\ttrue\\thttps://example.invalid/draft\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    published)",
-      "      printf 'false\\tfalse\\thttps://example.invalid/published\\n'",
+      "      printf 'false\\tfalse\\thttps://example.invalid/published\\t%s\\n' \"${asset_names}\"",
       "      ;;",
       "    *)",
       "      echo 'unexpected mock release state' >&2",
       "      exit 2",
       "      ;;",
       "  esac",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"create\" ]]; then",
+      "  if [[ \"${MOCK_RELEASE_CREATE_MATERIALIZES}\" == \"true\" ]]; then",
+      "    created_state='draft'",
+      "    if [[ \" $* \" == *' --prerelease '* ]]; then created_state='prerelease-draft'; fi",
+      "    printf '%s\\n' \"${created_state}\" > \"${MOCK_RELEASE_STATE_FILE}\"",
+      "    printf '0\\n' > \"${MOCK_RELEASE_LOOKUP_COUNT}\"",
+      "  fi",
+      "  exit \"${MOCK_RELEASE_CREATE_STATUS}\"",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"upload\" ]]; then",
+      "  count=0; if [[ -s \"${MOCK_UPLOAD_COUNT}\" ]]; then count=$(<\"${MOCK_UPLOAD_COUNT}\"); fi; count=$((count + 1)); printf '%s\\n' \"${count}\" > \"${MOCK_UPLOAD_COUNT}\"",
+      "  if [[ \"${count}\" -le \"${MOCK_UPLOAD_FAILURES}\" ]]; then echo 'temporary upload failure' >&2; exit 1; fi",
+      "  : > \"${MOCK_ASSETS_VISIBLE_FILE}\"",
+      "elif [[ \"${1:-}\" == \"release\" && \"${2:-}\" == \"edit\" ]]; then",
+      "  count=0; if [[ -s \"${MOCK_EDIT_COUNT}\" ]]; then count=$(<\"${MOCK_EDIT_COUNT}\"); fi; count=$((count + 1)); printf '%s\\n' \"${count}\" > \"${MOCK_EDIT_COUNT}\"",
+      "  if [[ \"${count}\" -le \"${MOCK_EDIT_FAILURES}\" ]]; then echo 'temporary edit failure' >&2; exit 1; fi",
       "fi",
       "",
     ].join("\n"),
@@ -203,15 +286,38 @@ function runPublishFixture({
       encoding: "utf8",
       env: {
         ...process.env,
-        PATH: `${mockBin}:/usr/bin:/bin`,
+        PATH: `${mockBin}:${dirname(process.execPath)}:/usr/bin:/bin`,
         CALL_LOG: callLog,
         MOCK_REMOTE_MAIN_SHA: effectiveRemoteMainSha,
         MOCK_REMOTE_TAG_SHA: remoteTagSha,
+        MOCK_REMOTE_TAG_STATE: remoteTagState,
+        MOCK_REMOTE_TAG_LOOKUP_COUNT: remoteTagLookupCount,
+        MOCK_TAG_VISIBILITY_DELAY: String(tagVisibilityDelay),
+        MOCK_TAG_PUSH_STATUS: String(tagPushStatus),
+        MOCK_TAG_PUSH_MATERIALIZES: String(tagPushMaterializes),
         MOCK_RELEASE_STATE: releaseState,
+        MOCK_RELEASE_STATE_FILE: releaseStateFile,
+        MOCK_RELEASE_LOOKUP_COUNT: releaseLookupCount,
+        MOCK_ASSETS_VISIBLE_FILE: assetsVisibleFile,
+        MOCK_RELEASE_VISIBILITY_DELAY: String(releaseVisibilityDelay),
+        MOCK_ASSET_VISIBILITY_DELAY: String(assetVisibilityDelay),
+        MOCK_RELEASE_CREATE_STATUS: String(releaseCreateStatus),
+        MOCK_RELEASE_CREATE_MATERIALIZES: String(releaseCreateMaterializes),
+        MOCK_UPLOAD_COUNT: uploadCount,
+        MOCK_UPLOAD_FAILURES: String(uploadFailures),
+        MOCK_EDIT_COUNT: editCount,
+        MOCK_EDIT_FAILURES: String(editFailures),
+        RELEASE_RETRY_ATTEMPTS: "4",
+        RELEASE_RETRY_SLEEP_SECONDS: "0",
         CURRENT_TAG: currentTag,
         TARGET_SHA: targetSha,
         RECOVER_EXISTING_RELEASE: recover,
         RELEASE_VERSION: version,
+        RELEASE_SOURCE_MODE: releaseSourceMode,
+        NPM_VERSION_EXISTS: npmVersionExists,
+        NPM_GIT_HEAD: npmGitHead,
+        MOCK_LIVE_NPM_VERSION_EXISTS: liveNpmVersionExists,
+        MOCK_LIVE_NPM_GIT_HEAD: liveNpmGitHead,
         GITHUB_REPOSITORY: "MemTensor/MemOS-Cloud-CLI",
         RUNNER_TEMP: runnerTemp,
         GH_TOKEN: "test-token",
@@ -318,6 +424,21 @@ test("uses SemVer precedence instead of lexical ordering", () => {
   );
 });
 
+test("refuses an out-of-order version before creating a new release tag", () => {
+  assert.equal(
+    validateReleaseVersionOrder("1.0.8", "v1.0.8", ["v1.0.6", "v1.0.7"]),
+    "v1.0.7",
+  );
+  assert.throws(
+    () =>
+      validateReleaseVersionOrder("1.0.7", "v1.0.7", [
+        "v1.0.6",
+        "v1.0.8-beta.1",
+      ]),
+    /newer than the latest existing SemVer tag/,
+  );
+});
+
 test("requires version without v and an exact live confirmation", () => {
   assert.equal(cleanVersion("1.0.7"), "1.0.7");
   assert.throws(() => cleanVersion("v1.0.7"), /leading v/);
@@ -327,6 +448,19 @@ test("requires version without v and an exact live confirmation", () => {
       version: "1.0.7",
       confirmation: "",
     }),
+  );
+  assert.doesNotThrow(() =>
+    validatePublishConfirmation({
+      dryRun: "false",
+      version: "1.0.7",
+      confirmation: "",
+      releaseSourceMode: "trusted_version_pr_merge",
+    }),
+  );
+  assert.equal(validateReleaseSourceMode("manual_dispatch"), "manual_dispatch");
+  assert.throws(
+    () => validateReleaseSourceMode("untrusted_auto"),
+    /unknown release source mode/,
   );
   assert.throws(
     () =>
@@ -384,6 +518,22 @@ test("allows non-main target refs only for dry runs", () => {
       }),
     /exactly main/,
   );
+  assert.doesNotThrow(() =>
+    validateReleaseTarget({
+      dryRun: "false",
+      targetRef: "a".repeat(40),
+      releaseSourceMode: "trusted_version_pr_merge",
+    }),
+  );
+  assert.throws(
+    () =>
+      validateReleaseTarget({
+        dryRun: "false",
+        targetRef: "not-a-merge-sha",
+        releaseSourceMode: "trusted_version_pr_merge",
+      }),
+    /merge commit SHA/,
+  );
 });
 
 test("runs trusted workflow code from the default branch and restricts live targets", () => {
@@ -437,6 +587,30 @@ test("runs trusted workflow code from the default branch and restricts live targ
         defaultBranchSha: "bbb",
       }),
     /stale or non-default commit/,
+  );
+  assert.doesNotThrow(() =>
+    validateLiveReleaseSource({
+      dryRun: "false",
+      workflowRef: "refs/pull/123/merge",
+      defaultBranch: "main",
+      targetSha: "aaa",
+      defaultBranchSha: "bbb",
+      targetIsDefaultBranchAncestor: true,
+      releaseSourceMode: "trusted_version_pr_merge",
+    }),
+  );
+  assert.throws(
+    () =>
+      validateLiveReleaseSource({
+        dryRun: "false",
+        workflowRef: "refs/heads/main",
+        defaultBranch: "main",
+        targetSha: "aaa",
+        defaultBranchSha: "bbb",
+        targetIsDefaultBranchAncestor: false,
+        releaseSourceMode: "trusted_version_pr_merge",
+      }),
+    /contained in origin\/main/,
   );
 });
 
@@ -644,6 +818,78 @@ test("does not announce a feature that was fully reverted in the same range", ()
   });
 });
 
+test("uses an optional reviewed version note and otherwise composes the validated Doc Agent draft", () => {
+  withFixture(() => {
+    write(
+      ".github/release-notes/v1.0.7.md",
+      "## Highlights\n\n- Authentication failures now explain the recovery step.\n",
+    );
+    const targetSha = commit("docs: add reviewed v1.0.7 release note");
+    const reviewed = reviewedReleaseNotesAtRef({
+      targetSha,
+      currentTag: "v1.0.7",
+    });
+    assert.equal(reviewed.path, ".github/release-notes/v1.0.7.md");
+    const manual = composePublicReleaseNotes({
+      githubNotes: {
+        name: "MemOS CLI v1.0.7",
+        body: "## What's Changed\n\n* Fix authentication errors.",
+      },
+      draft: validDraft,
+      reviewedNotes: reviewed,
+    });
+    assert.equal(manual.source, "reviewed-file-plus-github-whats-changed");
+    assert.match(manual.body, /Authentication failures/);
+    assert.match(manual.body, /What's Changed/);
+
+    const generated = composePublicReleaseNotes({
+      githubNotes: {
+        name: "MemOS CLI v1.0.7",
+        body: "## What's Changed\n\n* Fix authentication errors.",
+      },
+      draft: validDraft,
+    });
+    assert.equal(
+      generated.source,
+      "validated-doc-agent-plus-github-whats-changed",
+    );
+    assert.match(generated.body, /## Changelog/);
+    assert.match(generated.body, /Authentication errors/);
+  });
+});
+
+test("rejects placeholder or sensitive reviewed Release notes", () => {
+  withFixture(() => {
+    write(
+      ".github/release-notes/v1.0.7.md",
+      "## Highlights\n\n- TODO replace this draft before release.\n",
+    );
+    const placeholderSha = commit("docs: add placeholder release note");
+    assert.throws(
+      () =>
+        reviewedReleaseNotesAtRef({
+          targetSha: placeholderSha,
+          currentTag: "v1.0.7",
+        }),
+      /TODO\/TBD\/PLACEHOLDER/,
+    );
+
+    write(
+      ".github/release-notes/v1.0.8.md",
+      `## Highlights\n\n- Contact https://${["10", "0", "0", "8"].join(".")}/internal/release for rollout details.\n`,
+    );
+    const sensitiveSha = commit("docs: add unsafe release note");
+    assert.throws(
+      () =>
+        reviewedReleaseNotesAtRef({
+          targetSha: sensitiveSha,
+          currentTag: "v1.0.8",
+        }),
+      /credential-like or internal content/,
+    );
+  });
+});
+
 test("runs an end-to-end offline dry run and writes the inspection contract", () => {
   withFixture((root) => {
     writeVersions("99.99.99");
@@ -674,6 +920,7 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
       "README.md",
       "github-release-notes.md",
       "release-notes.md",
+      "release-notes-source.json",
       "evidence.json",
       "release-notes-draft.json",
       "docs-preview.md",
@@ -692,6 +939,10 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
     assert.equal(report.inspection_kind, "synthetic_contract_fixture");
     assert.equal(report.publish_blocked, false);
     assert.equal(report.existing_tag_status, "absent");
+    assert.equal(
+      report.release_notes_source,
+      "validated-doc-agent-plus-github-whats-changed",
+    );
     assert.deepEqual(report.product_paths, ["**"]);
     assert.equal(report.coverage.missing_required_count, 0);
     const evidence = JSON.parse(
@@ -712,9 +963,18 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
     );
     assert.equal(contract.release_trigger, "release.published");
     assert.equal(contract.required_webhook_event, "release");
+    assert.equal(
+      contract.draft_release_trigger,
+      "same-repository main PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
+    );
     assert.deepEqual(contract.product_paths, ["**"]);
+    assert.equal(
+      contract.live_release_policy.default_entry,
+      "automatic same-repository main PR merge with an all-three-file SemVer increase",
+    );
     assert.equal(contract.live_release_policy.creates_draft_release, true);
     assert.equal(contract.live_release_policy.direct_publish_allowed, false);
+    assert.equal(contract.reviewed_release_notes_optional, true);
     assert.deepEqual(contract.dry_run_side_effects, {
       creates_tag: false,
       creates_github_release: false,
@@ -729,6 +989,48 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
     if (exportDir) {
       cpSync(inspection, exportDir, { recursive: true });
     }
+  }, {
+    baselineVersion: "99.99.98",
+  });
+});
+
+test("prepares an automatic Draft from the reviewed merge commit even after main advances", () => {
+  withFixture((root) => {
+    git(["branch", "-M", "main"]);
+    writeVersions("99.99.99");
+    write(
+      "src/memos_cli/auth.py",
+      "def explain_error():\n    return 'credential expired'\n",
+    );
+    const releaseMergeSha = commit("fix(auth): explain expired credentials (#31)");
+    write(".github/workflows/noise.yml", "name: later trusted main check\n");
+    commit("ci: later main-only automation update");
+    git(["update-ref", "refs/remotes/origin/main", "HEAD"]);
+
+    const runnerTemp = join(root, "runner-temp");
+    execFileSync("node", [SCRIPT_PATH], {
+      encoding: "utf8",
+      env: trustedDispatchEnv({
+        RELEASE_VERSION: "99.99.99",
+        TARGET_REF: releaseMergeSha,
+        DRY_RUN: "false",
+        CREATE_DRAFT_RELEASE: "true",
+        PUBLISH_CONFIRMATION: "",
+        RELEASE_SOURCE_MODE: "trusted_version_pr_merge",
+        ALLOW_OFFLINE_DOCS_PREVIEW: "true",
+        RELEASE_CONTRACT_FIXTURE: "true",
+        RUNNER_TEMP: runnerTemp,
+        GITHUB_TOKEN: "",
+      }),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    const inspection = join(runnerTemp, "memos-cloud-cli-release-inspection");
+    const report = JSON.parse(
+      readFileSync(join(inspection, "quality-report.json"), "utf8"),
+    );
+    assert.equal(report.ok, true);
+    assert.equal(report.release_source_mode, "trusted_version_pr_merge");
+    assert.equal(report.target_sha, releaseMergeSha);
   }, {
     baselineVersion: "99.99.98",
   });
@@ -1383,9 +1685,21 @@ test("release workflow preserves two existing build targets and uses a draft-fir
   assert.match(workflow, /thirteen_items/);
   assert.match(workflow, /default:\s+true/);
   assert.match(workflow, /PUBLISH v<version>/);
+  assert.match(workflow, /pull_request:/);
+  assert.match(workflow, /types: \[closed\]/);
+  assert.match(workflow, /node \.github\/scripts\/resolve-cli-release\.mjs/);
+  assert.match(workflow, /PR_HEAD_REPO/);
+  assert.match(workflow, /PR_BASE_SHA/);
+  assert.match(workflow, /PR_MERGE_SHA/);
+  assert.match(workflow, /id: gate/);
+  assert.match(workflow, /steps\.gate\.outputs\.inspect == 'true'/);
   assert.match(
     workflow,
-    /github\.ref == format\('refs\/heads\/\{0\}', github\.event\.repository\.default_branch\)/,
+    /Check merged pull request boundary[\s\S]*?actions\/checkout@v4/,
+  );
+  assert.match(
+    workflow,
+    /resolve:\n[\s\S]*?github\.event\.pull_request\.merge_commit_sha[\s\S]*?persist-credentials: false[\s\S]*?node \.github\/scripts\/resolve-cli-release\.mjs/,
   );
   assert.match(
     workflow,
@@ -1404,20 +1718,30 @@ test("release workflow preserves two existing build targets and uses a draft-fir
     /build:\n[\s\S]*?persist-credentials: false\n[\s\S]*?\n  release:/,
   );
   assert.match(workflow, /release:\n[\s\S]*?persist-credentials: true/);
+  assert.match(
+    workflow,
+    /release:\n[\s\S]*?actions\/setup-node@v4[\s\S]*?node-version: 22/,
+  );
   assert.match(workflow, /DOC_AGENT_RELEASE_FAILURE_URL/);
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
-  assert.match(workflow, /prepare:\n[\s\S]*permissions:\n\s+contents: write/);
+  assert.match(workflow, /prepare:\n[\s\S]*permissions:\n\s+contents: read/);
   assert.match(workflow, /release:\n[\s\S]*permissions:\n\s+contents: write/);
   assert.match(publishScript, /recover_existing_release=true/);
   assert.match(workflow, /ubuntu-22\.04/);
   assert.match(workflow, /windows-2022/);
-  assert.match(workflow, /build:\n\s+if: \$\{\{ !inputs\.dry_run \}\}/);
+  assert.match(
+    workflow,
+    /build:\n\s+if: >-[\s\S]*?needs\.resolve\.outputs\.eligible == 'true'[\s\S]*?needs\.resolve\.outputs\.dry_run != 'true'/,
+  );
+  assert.doesNotMatch(workflow, /build:\n\s+if: \$\{\{ !inputs\.dry_run \}\}/);
   assert.doesNotMatch(workflow, /macos-/);
   assert.doesNotMatch(workflow, /checksum|sha-256|sha256/i);
   assert.match(workflow, /github-release-notes\.md/);
+  assert.match(workflow, /release-notes-source\.json/);
   assert.match(workflow, /bash \.github\/scripts\/publish-cli-release\.sh/);
   assert.match(publishScript, /release_flags=\(--draft\)/);
+  assert.match(publishScript, /gh release create[\s\S]*--verify-tag/);
   assert.match(publishScript, /git config --local user\.name/);
   assert.match(publishScript, /collect_release_assets/);
   assert.match(publishScript, /release_assets=\(dist\/\*\.tar\.gz\)/);
@@ -1427,6 +1751,8 @@ test("release workflow preserves two existing build targets and uses a draft-fir
     /Publish the draft manually to emit release\.published/,
   );
   assert.doesNotMatch(publishScript, /gh release create[\s\S]*--latest/);
+  assert.match(publishScript, /trusted_version_pr_merge/);
+  assert.match(publishScript, /merge-base --is-ancestor/);
 });
 
 test("publish state machine creates only a Draft Release for a new stable tag", () => {
@@ -1442,6 +1768,71 @@ test("publish state machine creates only a Draft Release for a new stable tag", 
   assert.match(result.output, /Draft Release created/);
 });
 
+test("publish state machine waits for pushed tags and newly created Draft Releases to become visible", () => {
+  const result = runPublishFixture({
+    tagVisibilityDelay: 2,
+    releaseVisibilityDelay: 1,
+    assetVisibilityDelay: 2,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/git push origin/g) || []).length, 1);
+  assert.equal((result.callLog.match(/gh release create/g) || []).length, 1);
+  assert.ok((result.callLog.match(/git ls-remote --tags/g) || []).length >= 4);
+  assert.ok((result.callLog.match(/gh release view/g) || []).length >= 5);
+  assert.match(result.output, /Draft Release created/);
+});
+
+test("publish state machine reconciles an ambiguous tag push without pushing twice", () => {
+  const reconciled = runPublishFixture({
+    tagPushStatus: 1,
+    tagPushMaterializes: true,
+    tagVisibilityDelay: 1,
+  });
+  assert.equal(reconciled.failure, undefined);
+  assert.equal((reconciled.callLog.match(/git push origin/g) || []).length, 1);
+  assert.equal((reconciled.callLog.match(/gh release create/g) || []).length, 1);
+  assert.match(reconciled.output, /continuing without pushing twice/);
+
+  const missing = runPublishFixture({
+    tagPushStatus: 1,
+    tagPushMaterializes: false,
+  });
+  assert.ok(missing.failure);
+  assert.equal((missing.callLog.match(/git push origin/g) || []).length, 1);
+  assert.doesNotMatch(missing.callLog, /gh release create/);
+  assert.match(missing.output, /Refusing to issue a second push/);
+});
+
+test("publish state machine reconciles an ambiguous create response without creating twice", () => {
+  const reconciled = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: true,
+    releaseVisibilityDelay: 1,
+  });
+  assert.equal(reconciled.failure, undefined);
+  assert.equal((reconciled.callLog.match(/gh release create/g) || []).length, 1);
+
+  const missing = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: false,
+  });
+  assert.ok(missing.failure);
+  assert.equal((missing.callLog.match(/gh release create/g) || []).length, 1);
+  assert.match(missing.output, /no matching Draft became visible/);
+});
+
+test("publish state machine resumes an incomplete Draft instead of creating a second Release", () => {
+  const result = runPublishFixture({
+    releaseCreateStatus: 1,
+    releaseCreateMaterializes: true,
+    assetVisibilityDelay: 100,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/gh release create/g) || []).length, 1);
+  assert.equal((result.callLog.match(/gh release upload/g) || []).length, 1);
+  assert.match(result.output, /safely resuming the Draft upload/);
+});
+
 test("publish state machine rechecks main before release mutation", () => {
   const result = runPublishFixture({
     remoteMainSha: "def5678000000000000000000000000000000000",
@@ -1452,6 +1843,17 @@ test("publish state machine rechecks main before release mutation", () => {
     result.callLog,
     /git tag |git push |gh release upload|gh release edit|gh release create/,
   );
+});
+
+test("publish state machine accepts a trusted merged release boundary still contained in main", () => {
+  const result = runPublishFixture({
+    remoteMainSha: "def5678000000000000000000000000000000000",
+    releaseSourceMode: "trusted_version_pr_merge",
+  });
+  assert.equal(result.failure, undefined);
+  assert.match(result.callLog, /git fetch --no-tags origin/);
+  assert.match(result.callLog, /git merge-base --is-ancestor/);
+  assert.match(result.callLog, /gh release create[\s\S]*--draft/);
 });
 
 test("publish state machine requires explicit recovery for a matching orphan tag", () => {
@@ -1468,6 +1870,75 @@ test("publish state machine requires explicit recovery for a matching orphan tag
   assert.equal(recovered.failure, undefined);
   assert.doesNotMatch(recovered.callLog, /git tag |git push /);
   assert.match(recovered.callLog, /gh release create[\s\S]*--draft/);
+});
+
+test("publish state machine verifies npm gitHead before explicit recovery", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const missingAuthorization = runPublishFixture({
+    npmVersionExists: "true",
+    npmGitHead: targetSha,
+  });
+  assert.ok(missingAuthorization.failure);
+  assert.match(missingAuthorization.output, /explicit recover_existing_release=true/);
+  assert.doesNotMatch(
+    missingAuthorization.callLog,
+    /git tag |git push |gh release create/,
+  );
+
+  const conflicting = runPublishFixture({
+    recover: "true",
+    npmVersionExists: "true",
+    npmGitHead: "c".repeat(40),
+  });
+  assert.ok(conflicting.failure);
+  assert.match(conflicting.output, /expected immutable release target/);
+  assert.doesNotMatch(conflicting.callLog, /git tag |git push |gh release create/);
+
+  const verified = runPublishFixture({
+    recover: "true",
+    npmVersionExists: "true",
+    npmGitHead: targetSha,
+  });
+  assert.equal(verified.failure, undefined);
+  assert.match(verified.output, /Verified existing npm/);
+  assert.match(verified.callLog, /gh release create/);
+});
+
+test("publish state machine fails closed when npm changes after inspection", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const appeared = runPublishFixture({
+    npmVersionExists: "false",
+    liveNpmVersionExists: "true",
+    liveNpmGitHead: targetSha,
+  });
+  assert.ok(appeared.failure);
+  assert.match(appeared.output, /npm state changed after release inspection/);
+  assert.doesNotMatch(appeared.callLog, /git tag |git push |gh release create/);
+
+  const changedHead = runPublishFixture({
+    recover: "true",
+    npmVersionExists: "true",
+    npmGitHead: targetSha,
+    liveNpmVersionExists: "true",
+    liveNpmGitHead: "d".repeat(40),
+  });
+  assert.ok(changedHead.failure);
+  assert.match(changedHead.output, /npm gitHead changed after release inspection/);
+  assert.doesNotMatch(changedHead.callLog, /git tag |git push |gh release create/);
+});
+
+test("publish state machine waits for a matching existing Release before classifying a tag as orphaned", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const result = runPublishFixture({
+    remoteTagSha: targetSha,
+    releaseState: "draft",
+    initialReleaseDelayed: true,
+    releaseVisibilityDelay: 2,
+  });
+  assert.equal(result.failure, undefined);
+  assert.ok((result.callLog.match(/gh release view/g) || []).length >= 3);
+  assert.match(result.callLog, /gh release upload/);
+  assert.doesNotMatch(result.output, /recover_existing_release=true/);
 });
 
 test("publish state machine resumes a Draft and leaves a published Release unchanged", () => {
@@ -1491,6 +1962,20 @@ test("publish state machine resumes a Draft and leaves a published Release uncha
     published.callLog,
     /gh release upload|gh release edit|gh release create|git tag |git push /,
   );
+});
+
+test("publish state machine safely retries idempotent Draft upload and edit operations", () => {
+  const targetSha = "abc1234000000000000000000000000000000000";
+  const result = runPublishFixture({
+    remoteTagSha: targetSha,
+    releaseState: "draft",
+    uploadFailures: 1,
+    editFailures: 1,
+  });
+  assert.equal(result.failure, undefined);
+  assert.equal((result.callLog.match(/gh release upload/g) || []).length, 2);
+  assert.equal((result.callLog.match(/gh release edit/g) || []).length, 2);
+  assert.doesNotMatch(result.callLog, /gh release create|git tag |git push /);
 });
 
 test("publish state machine refuses a conflicting tag and marks prereleases", () => {
