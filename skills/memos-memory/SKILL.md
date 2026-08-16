@@ -1,5 +1,5 @@
 ---
-name: MemOS Memory
+name: memos-memory
 description: Provide universal memory capabilities for different AI agents and development frameworks, unifying the capture, retrieval, and management of user, project, and task context.
 ---
 
@@ -158,11 +158,11 @@ memos delete <MEMORY_ID> --format json
 ```
 
 ```bash
-memos uninstall --agent codex --yes
+memos uninstall --agent <CURRENT_AGENT> --yes
 ```
 
 ```bash
-memos uninstall --agent codex --yes --path
+memos uninstall --agent <CURRENT_AGENT> --yes --path
 ```
 
 ```bash

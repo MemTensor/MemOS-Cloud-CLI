@@ -106,6 +106,9 @@ memos init --agent codex
 - `--agent workbuddy` → `~/.codebuddy/skills/memos/`
 - `--agent cline` → `~/.cline/skills/memos/`
 - `--agent copilot` → `~/.copilot/skills/memos/`
+- `--agent deepseek` → `~/.dsh/skills/memos-memory/`（或 `$DSH_HOME/skills/memos-memory/`）
+
+对于 DeepSeek Harness，对应的 guidance 会写入 `~/.dsh/AGENTS.md`；设置 `DSH_HOME` 后则写入 `$DSH_HOME/AGENTS.md`。
 
 也可以直接带参数：
 

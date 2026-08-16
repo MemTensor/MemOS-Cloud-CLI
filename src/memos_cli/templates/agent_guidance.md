@@ -28,7 +28,7 @@ Command guide:
 - `memos chat`: ask MemOS to answer with memory context.
   - Example: `memos chat "What do you know about my preferences?" --format agent`
 - `memos uninstall`: remove MemOS skill and managed guidance for the current agent.
-  - Example: `memos uninstall --agent codex --yes`
+  - Example: `memos uninstall --agent <current_agent> --yes`
 
 - If `--format` is omitted, treat the default as `agent`.
 - Always use `--format agent` for MemOS CLI commands used inside agent workflows.
@@ -86,4 +86,4 @@ Command guide:
 - `memos chat`: ask MemOS to answer with memory context.
   - Example: `memos chat "What do you know about my preferences?" --format agent`
 - `memos uninstall`: remove MemOS skill and managed guidance for the current agent.
-  - Example: `memos uninstall --agent codex --yes`
+  - Example: `memos uninstall --agent <current_agent> --yes`

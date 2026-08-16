@@ -14,7 +14,7 @@ memos uninstall --agent <CURRENT_AGENT> --yes
 
 ## Arguments
 
-- `--agent <CURRENT_AGENT>` (required): current agent name, such as `codex`, `cursor`, `claude`, `openclaw`, or `hermes`.
+- `--agent <CURRENT_AGENT>` (required): current agent name, such as `codex`, `cursor`, `claude`, `deepseek`, `openclaw`, or `hermes`.
 - `--yes` / `-y`: skip confirmation for agent workflows.
 - `--remove-config`: also remove `~/.memos/config.yaml` when the user explicitly wants local configuration removed.
 - `--path`: also remove MemOS-managed PATH entries from `~/.bash_profile` and `~/.zshenv`. Use it only when the user explicitly wants shell PATH cleanup.
