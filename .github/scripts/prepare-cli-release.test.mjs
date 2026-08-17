@@ -20,6 +20,7 @@ import {
   collectCliEvidence,
   compareSemver,
   composePublicReleaseNotes,
+  curateDraftByEvidence,
   docsPreviewMarkdown,
   findPreviousTag,
   generateGitHubReleaseNotes,
@@ -945,6 +946,7 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
     );
     assert.deepEqual(report.product_paths, ["**"]);
     assert.equal(report.coverage.missing_required_count, 0);
+    assert.equal(report.evidence_curation.removed_item_count, 0);
     const evidence = JSON.parse(
       readFileSync(join(inspection, "evidence.json"), "utf8"),
     );
@@ -953,6 +955,7 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
       readFileSync(join(inspection, "release-notes-draft.json"), "utf8"),
     );
     assert.equal(acceptedDraft.ok, true);
+    assert.equal(acceptedDraft.evidence_curation.removed_item_count, 0);
     assert.ok(acceptedDraft.release_items[0].source_refs.length > 0);
     assert.match(
       readFileSync(join(inspection, "README.md"), "utf8"),
@@ -1200,6 +1203,108 @@ test("requests three independent candidates and deterministically selects the va
       ),
       [1, 2, 3],
     );
+  } finally {
+    globalThis.fetch = previousFetch;
+    if (previousUrl === undefined) {
+      delete process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_URL;
+    } else {
+      process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_URL = previousUrl;
+    }
+    if (previousToken === undefined) {
+      delete process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN;
+    } else {
+      process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN = previousToken;
+    }
+  }
+});
+
+test("accepts the real run shape after pruning an extra automation-only item", async () => {
+  const previousFetch = globalThis.fetch;
+  const previousUrl = process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_URL;
+  const previousToken = process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN;
+  const productSha = "a6199ed6c338f8369bf5fccef26c883701ae58bb";
+  const automationSha = "9c57e9c60a7cdc3b0ce23de75f1c7a7307138c0d";
+  const mergeSha = "cd568a3945fc9d97cd540f2ef97665b88e1cd877";
+  const extendedEvidence = {
+    ...evidence,
+    commits: [
+      {
+        sha: productSha,
+        short_sha: "a6199ed",
+        subject: "feat: add DeepSeek Harness agent integration (#30)",
+        source_refs: ["a6199ed", productSha, "#30"],
+      },
+      {
+        sha: automationSha,
+        short_sha: "9c57e9c",
+        subject: "ci: fix CLI release trigger and permissions",
+        source_refs: ["9c57e9c", automationSha],
+      },
+      {
+        sha: mergeSha,
+        short_sha: "cd568a3",
+        subject: "Merge pull request #31 from MemTensor/docs-sync/memos-cli-release-trigger-fix",
+        source_refs: ["cd568a3", mergeSha, "#31"],
+      },
+    ],
+    pull_requests: [{ number: "30" }, { number: "31" }],
+    important_commits: [
+      {
+        sha: productSha,
+        short_sha: "a6199ed",
+        subject: "feat: add DeepSeek Harness agent integration (#30)",
+      },
+    ],
+    required_source_refs: [
+      {
+        short_sha: "a6199ed",
+        accepted_refs: ["a6199ed", productSha, "#30"],
+      },
+    ],
+  };
+  const response = {
+    ...validDraft,
+    release_items: [
+      {
+        ...validDraft.release_items[0],
+        text_cn:
+          "**DeepSeek Harness 集成**：初始化时生成适配的代理指引，便于直接连接 MemOS 记忆能力。",
+        text_en:
+          "**DeepSeek Harness integration**: Generates compatible agent guidance during initialization so MemOS memory can be connected directly.",
+        source_refs: ["a6199ed", "#30"],
+      },
+      {
+        category: "Improved",
+        text_cn: "**发布流程**：调整内部发布检查，使自动化运行更加稳定。",
+        text_en:
+          "**Release workflow**: Adjusted internal release checks for more stable automation.",
+        source_refs: ["9c57e9c", "cd568a3"],
+      },
+    ],
+  };
+  let requestCount = 0;
+  try {
+    process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_URL =
+      "https://example.invalid/draft";
+    process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN = "test-token";
+    globalThis.fetch = async () => {
+      requestCount += 1;
+      return {
+        ok: true,
+        status: 200,
+        text: async () => JSON.stringify(response),
+      };
+    };
+
+    const result = await requestDocAgentDraft(extendedEvidence);
+    assert.equal(requestCount, 3);
+    assert.equal(result.validation_report.ok, true);
+    assert.equal(result.validation_attempt_count, 1);
+    assert.equal(result.repair_attempt_count, 0);
+    assert.equal(result.release_items.length, 1);
+    assert.deepEqual(result.release_items[0].source_refs, ["a6199ed", "#30"]);
+    assert.equal(result.evidence_curation.removed_item_count, 1);
+    assert.equal(result.evidence_curation.removed_source_ref_count, 2);
   } finally {
     globalThis.fetch = previousFetch;
     if (previousUrl === undefined) {
@@ -1524,6 +1629,144 @@ test("rejects a real source ref when it belongs only to release automation", () 
       (item) =>
         item.kind === "non_user_facing_source_refs" && item.index === 1,
     ),
+  );
+});
+
+test("deterministically removes release items backed only by automation evidence", () => {
+  const automationSha = "def5678000000000000000000000000000000000";
+  const extendedEvidence = {
+    ...evidence,
+    commits: [
+      ...evidence.commits,
+      {
+        sha: automationSha,
+        short_sha: "def5678",
+        subject: "fix(ci): repair release workflow",
+        source_refs: ["def5678", automationSha, "#99"],
+      },
+    ],
+    pull_requests: [...evidence.pull_requests, { number: "99" }],
+  };
+  const result = curateDraftByEvidence(
+    {
+      ...validDraft,
+      release_items: [
+        validDraft.release_items[0],
+        {
+          category: "Improved",
+          text_cn:
+            "**发布流程**：调整内部发布检查，使自动化运行更加稳定。",
+          text_en:
+            "**Release workflow**: Adjusted internal release checks for more stable automation.",
+          source_refs: ["def5678", "#99"],
+        },
+      ],
+    },
+    extendedEvidence,
+  );
+
+  assert.equal(result.release_items.length, 1);
+  assert.deepEqual(result.release_items[0].source_refs, ["abc1234", "#31"]);
+  assert.equal(result.evidence_curation.removed_item_count, 1);
+  assert.equal(result.evidence_curation.removed_source_ref_count, 2);
+  assert.equal(validateDraft(result, extendedEvidence).ok, true);
+});
+
+test("strips known automation refs from an otherwise user-facing item", () => {
+  const automationSha = "def5678000000000000000000000000000000000";
+  const extendedEvidence = {
+    ...evidence,
+    commits: [
+      ...evidence.commits,
+      {
+        sha: automationSha,
+        short_sha: "def5678",
+        subject: "fix(ci): repair release workflow",
+        source_refs: ["def5678", automationSha],
+      },
+    ],
+  };
+  const result = curateDraftByEvidence(
+    {
+      ...validDraft,
+      release_items: [
+        {
+          ...validDraft.release_items[0],
+          source_refs: ["abc1234", "def5678", "#31"],
+        },
+      ],
+    },
+    extendedEvidence,
+  );
+
+  assert.deepEqual(result.release_items[0].source_refs, ["abc1234", "#31"]);
+  assert.equal(result.evidence_curation.removed_item_count, 0);
+  assert.equal(result.evidence_curation.removed_source_ref_count, 1);
+  assert.equal(validateDraft(result, extendedEvidence).ok, true);
+});
+
+test("preserves unknown refs so malformed Doc Agent output still fails closed", () => {
+  const result = curateDraftByEvidence(
+    {
+      ...validDraft,
+      release_items: [
+        {
+          ...validDraft.release_items[0],
+          source_refs: ["not-real"],
+        },
+      ],
+    },
+    evidence,
+  );
+
+  assert.deepEqual(result.release_items[0].source_refs, ["not-real"]);
+  assert.equal(result.evidence_curation.removed_item_count, 0);
+  assert.ok(
+    validateDraft(result, evidence).issues.some(
+      (item) => item.kind === "invalid_source_ref",
+    ),
+  );
+});
+
+test("still fails closed when Doc Agent returns only automation items", () => {
+  const automationSha = "def5678000000000000000000000000000000000";
+  const extendedEvidence = {
+    ...evidence,
+    commits: [
+      ...evidence.commits,
+      {
+        sha: automationSha,
+        short_sha: "def5678",
+        subject: "fix(ci): repair release workflow",
+        source_refs: ["def5678", automationSha],
+      },
+    ],
+  };
+  const result = curateDraftByEvidence(
+    {
+      ...validDraft,
+      release_items: [
+        {
+          category: "Improved",
+          text_cn:
+            "**发布流程**：调整内部发布检查，使自动化运行更加稳定。",
+          text_en:
+            "**Release workflow**: Adjusted internal release checks for more stable automation.",
+          source_refs: ["def5678"],
+        },
+      ],
+    },
+    extendedEvidence,
+  );
+  const validation = validateDraft(result, extendedEvidence);
+
+  assert.equal(result.release_items.length, 0);
+  assert.equal(validation.ok, false);
+  assert.ok(
+    validation.issues.some((item) => item.kind === "empty_release_items"),
+  );
+  assert.ok(
+    validation.issues.some((item) => item.kind === "missing_required_ref"),
   );
 });
 
