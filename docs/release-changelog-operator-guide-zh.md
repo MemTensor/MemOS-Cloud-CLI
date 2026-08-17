@@ -1,6 +1,6 @@
 # MemOS Cloud CLI 更新日志自动化使用说明
 
-更新时间：2026-07-28
+更新时间：2026-08-17
 
 本文面向 CLI 发布人员、Doc Agent 维护人员和文档审核人员，说明
 `MemTensor/MemOS-Cloud-CLI` 如何把一次正常的 GitHub Release 转换为官网
@@ -17,10 +17,11 @@ SHA-256 manifest、npm 发布或 OSS 上传，也不会替 CLI 负责人决定�
 
 ```text
 CLI 负责人确定 <next-version> 并完成真实代码、版本号更新
--> Actions 手动运行 dry_run=true
--> 审核 GitHub Release Notes 和中英文 Plugin changelog 预览
--> Actions 手动运行 dry_run=false，并输入精确确认词
--> 在 main 当前提交创建 v<next-version> Tag
+-> PR 运行只读 Pre/Post-Merge Checks
+-> 维护者审核并把内部或 Fork PR 合并到正式 main
+-> 正式 main 的 push 自动校验三个版本文件和 SemVer 递增
+-> 自动生成、校验 GitHub Release Notes 和中英文 Plugin changelog
+-> 在本次正式 main 提交创建 v<next-version> Tag
 -> 沿用仓库现有 Linux/Windows 构建并创建 Draft GitHub Release
 -> CLI 负责人审核 Draft 的 Tag、What's Changed 和资产
 -> 人工点击 Publish
@@ -36,8 +37,9 @@ CLI 负责人确定 <next-version> 并完成真实代码、版本号更新
 -> 人工确认后才允许 production
 ```
 
-GitHub Actions 仍然存在，而且承担版本输入校验、dry-run、现有二平台构建、
-Tag 和 Draft Release 创建。Doc Agent 不替代 Actions；它从
+GitHub Actions 承担版本变化识别、证据和文案校验、现有二平台构建、Tag 和
+Draft Release 创建。发布人员仍可手动 dry-run，手动真实运行只作为恢复入口。
+Doc Agent 不替代 Actions；它从
 `release.published` 开始接管官网文案链路。
 
 ---
@@ -349,6 +351,16 @@ dry_run: true
 
 ## 10. 真实发布怎么操作
 
+默认不需要发布人员再次手动运行 workflow。只要一个经过审核的内部或 Fork PR
+合并到正式仓库 `main`，并且三个版本文件都从旧版本一致递增到同一个新 SemVer，
+正式仓库的 `push` 事件就会自动创建 Tag 和 Draft Release。
+
+自动路径使用正式仓库的 workflow、Secret 和写权限；Fork 不会获得这些权限。
+如果合并没有改变版本，workflow 会成功跳过，不产生发布副作用。
+
+下面的手动输入只用于事前 dry-run、自动运行失败后的明确恢复，或维护者决定不走
+默认自动入口的特殊情况。
+
 只有 dry-run artifact 审核通过、发布提交已经在受保护的默认分支 `main` 后，
 才能运行：
 
@@ -376,7 +388,7 @@ workflow 会：
 4. 生成并校验 Release/官网文案。
 5. 构建仓库原本支持的 Linux x64 和 Windows x64 资产。
 6. 创建或更新 Draft 前重新读取远端 `refs/heads/main`；如果 main 在构建期间前进，
-   流程会失败并要求重新 dry-run。
+   手动运行会失败并要求重新 dry-run；自动运行允许目标仍是当前 main 的祖先。
 7. 在目标 SHA 创建 `v<next-version>` Tag。
 8. 创建 Draft GitHub Release。
 
@@ -557,7 +569,7 @@ source ref。只引用 workflow、测试或发布自动化提交的条目会被�
 - [ ] 中英文预览内容具体、准确、来源完整。
 - [ ] 远端仍没有候选 Tag 和 Release。
 - [ ] 发布提交已在当前 `main`。
-- [ ] 精确确认词由发布负责人本人输入。
+- [ ] 默认自动入口来自正式 `main` 的受信 push；如果使用手动真实运行，精确确认词由发布负责人本人输入。
 
 Publish Draft 前：
 

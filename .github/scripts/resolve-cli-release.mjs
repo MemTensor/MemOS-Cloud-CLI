@@ -13,6 +13,7 @@ export const VERSION_FILES = [
 ];
 
 const PACKAGE_NAME = "@memtensor/memos-cloud-cli";
+const TRUSTED_REPOSITORY = "MemTensor/MemOS-Cloud-CLI";
 
 function clean(value) {
   return String(value ?? "").trim();
@@ -99,7 +100,7 @@ export function inspectVersionTransition({
     return {
       ok: true,
       eligible: false,
-      reason: "the merged PR did not change the CLI release version",
+      reason: "the main push did not change the CLI release version",
       changed_version_files: [],
     };
   }
@@ -121,7 +122,7 @@ export function inspectVersionTransition({
     return {
       ok: false,
       eligible: false,
-      reason: `the release version changed, but all three version files were not updated by this PR; missing or unchanged: ${missingFromPr.join(", ")}`,
+      reason: `the release version changed, but all three version files were not updated by this main push; missing or unchanged: ${missingFromPr.join(", ")}`,
       previous_version: previous.version,
       version: clean(currentVersions?.["package.json"]),
       changed_version_files: changedVersionValues,
@@ -180,69 +181,75 @@ export function inspectVersionTransition({
   };
 }
 
-export function inspectPullRequestEvent({
+export function inspectMainPushEvent({
   eventName,
-  merged,
-  baseRef,
-  headRepo,
   repository,
-  mergeSha,
-  baseSha,
+  ref,
+  beforeSha,
+  afterSha,
 }) {
-  if (eventName !== "pull_request") {
+  if (eventName === "workflow_dispatch") {
     return { ok: true, inspect: false, reason: "manual workflow dispatch" };
   }
-  if (clean(merged).toLowerCase() !== "true") {
-    return { ok: true, inspect: false, reason: "pull request closed without merge" };
-  }
-  if (clean(baseRef) !== "main") {
+  if (eventName !== "push") {
     return {
       ok: true,
       inspect: false,
-      reason: `pull request targets ${clean(baseRef) || "an unknown branch"}, not main`,
+      reason: `unsupported automatic release event: ${clean(eventName) || "unknown"}`,
     };
   }
-  if (clean(headRepo) !== clean(repository)) {
+  if (clean(repository) !== TRUSTED_REPOSITORY) {
     return {
       ok: true,
       inspect: false,
-      reason: "fork pull requests cannot authorize an automatic CLI release",
+      reason: "automatic CLI releases only run for the official repository",
     };
   }
-  if (!exactSha(mergeSha) || !exactSha(baseSha)) {
+  if (clean(ref) !== "refs/heads/main") {
+    return {
+      ok: true,
+      inspect: false,
+      reason: `push targets ${clean(ref) || "an unknown ref"}, not refs/heads/main`,
+    };
+  }
+  if (
+    !exactSha(beforeSha) ||
+    !exactSha(afterSha) ||
+    /^0{40}$/.test(clean(beforeSha)) ||
+    /^0{40}$/.test(clean(afterSha)) ||
+    clean(beforeSha) === clean(afterSha)
+  ) {
     return {
       ok: false,
       inspect: false,
-      reason: "merged PR must provide exact 40-character base and merge commit SHAs",
+      reason:
+        "main push must provide distinct, non-zero 40-character before and after commit SHAs",
     };
   }
   return {
     ok: true,
     inspect: true,
-    reason: "same-repository PR merged into main; inspect the three committed versions",
+    reason:
+      "official main advanced; inspect the committed version transition after the reviewed merge",
   };
 }
 
 export function validateAutomaticRelease({
   eventName,
-  merged,
-  baseRef,
-  headRepo,
   repository,
-  mergeSha,
-  baseSha,
+  ref,
+  beforeSha,
+  afterSha,
   previousVersions,
   currentVersions,
   changedFiles,
 }) {
-  const event = inspectPullRequestEvent({
+  const event = inspectMainPushEvent({
     eventName,
-    merged,
-    baseRef,
-    headRepo,
     repository,
-    mergeSha,
-    baseSha,
+    ref,
+    beforeSha,
+    afterSha,
   });
   if (!event.ok || !event.inspect) return { ...event, eligible: false };
   const transition = inspectVersionTransition({
@@ -253,8 +260,8 @@ export function validateAutomaticRelease({
   return {
     ...transition,
     inspect: true,
-    target_sha: clean(mergeSha),
-    base_sha: clean(baseSha),
+    target_sha: clean(afterSha),
+    base_sha: clean(beforeSha),
   };
 }
 
@@ -292,7 +299,7 @@ export function applyNpmRegistryGuard({
       npm_version_exists: true,
       npm_git_head: npmGitHead,
       recovery_required: true,
-      reason: `${PACKAGE_NAME}@${result.version} records npm gitHead ${npmGitHead}, not the reviewed merge commit ${clean(result.target_sha)}; refusing to move or invent release metadata`,
+      reason: `${PACKAGE_NAME}@${result.version} records npm gitHead ${npmGitHead}, not the trusted main commit ${clean(result.target_sha)}; refusing to move or invent release metadata`,
     };
   }
   if (recoveryAuthorized) {
@@ -303,7 +310,7 @@ export function applyNpmRegistryGuard({
       npm_version_exists: true,
       npm_git_head: npmGitHead,
       recovery_required: true,
-      reason: `${PACKAGE_NAME}@${result.version} already exists at the reviewed merge commit; this explicit workflow rerun may reconcile missing GitHub metadata without republishing npm`,
+      reason: `${PACKAGE_NAME}@${result.version} already exists at the trusted main commit; this explicit workflow rerun may reconcile missing GitHub metadata without republishing npm`,
     };
   }
   return {
@@ -313,7 +320,7 @@ export function applyNpmRegistryGuard({
     npm_version_exists: true,
     npm_git_head: npmGitHead,
     recovery_required: true,
-    reason: `${PACKAGE_NAME}@${result.version} already exists at the reviewed merge commit; inspect npm, tag, and GitHub Release state, then use the manual recovery input if GitHub metadata is incomplete`,
+    reason: `${PACKAGE_NAME}@${result.version} already exists at the trusted main commit; inspect npm, tag, and GitHub Release state, then use the manual recovery input if GitHub metadata is incomplete`,
   };
 }
 
@@ -423,14 +430,12 @@ function manualResult(env) {
 
 function automaticResult(env, root) {
   const recoveryAuthorized = automaticRecoveryRequested(env.RUN_ATTEMPT);
-  const event = inspectPullRequestEvent({
+  const event = inspectMainPushEvent({
     eventName: env.EVENT_NAME,
-    merged: env.PR_MERGED,
-    baseRef: env.PR_BASE_REF,
-    headRepo: env.PR_HEAD_REPO,
     repository: env.GITHUB_REPOSITORY,
-    mergeSha: env.PR_MERGE_SHA,
-    baseSha: env.PR_BASE_SHA,
+    ref: env.PUSH_REF,
+    beforeSha: env.PUSH_BEFORE_SHA,
+    afterSha: env.PUSH_AFTER_SHA,
   });
   if (!event.ok || !event.inspect) {
     return {
@@ -443,7 +448,7 @@ function automaticResult(env, root) {
       recover_existing_release: recoveryAuthorized ? "true" : "false",
       fault_case: "none",
       publish_confirmation: "",
-      release_source_mode: "trusted_version_pr_merge",
+      release_source_mode: "trusted_main_push",
       npm_version_exists: false,
       npm_git_head: "",
       recovery_required: false,
@@ -451,17 +456,15 @@ function automaticResult(env, root) {
   }
   const result = validateAutomaticRelease({
     eventName: env.EVENT_NAME,
-    merged: env.PR_MERGED,
-    baseRef: env.PR_BASE_REF,
-    headRepo: env.PR_HEAD_REPO,
     repository: env.GITHUB_REPOSITORY,
-    mergeSha: env.PR_MERGE_SHA,
-    baseSha: env.PR_BASE_SHA,
-    previousVersions: versionsFromGitRef(env.PR_BASE_SHA, root),
-    currentVersions: versionsFromGitRef(env.PR_MERGE_SHA, root),
+    ref: env.PUSH_REF,
+    beforeSha: env.PUSH_BEFORE_SHA,
+    afterSha: env.PUSH_AFTER_SHA,
+    previousVersions: versionsFromGitRef(env.PUSH_BEFORE_SHA, root),
+    currentVersions: versionsFromGitRef(env.PUSH_AFTER_SHA, root),
     changedFiles: changedFilesFromGitRange(
-      env.PR_BASE_SHA,
-      env.PR_MERGE_SHA,
+      env.PUSH_BEFORE_SHA,
+      env.PUSH_AFTER_SHA,
       root,
     ),
   });
@@ -475,7 +478,7 @@ function automaticResult(env, root) {
       recover_existing_release: recoveryAuthorized ? "true" : "false",
       fault_case: "none",
       publish_confirmation: "",
-      release_source_mode: "trusted_version_pr_merge",
+      release_source_mode: "trusted_main_push",
       npm_version_exists: false,
       npm_git_head: "",
       recovery_required: false,
@@ -494,7 +497,7 @@ function automaticResult(env, root) {
     recover_existing_release: recoveryAuthorized ? "true" : "false",
     fault_case: "none",
     publish_confirmation: "",
-    release_source_mode: "trusted_version_pr_merge",
+    release_source_mode: "trusted_main_push",
   };
 }
 

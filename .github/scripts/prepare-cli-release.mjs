@@ -35,7 +35,7 @@ export const RELEASE_FAULT_CASES = [
 ];
 export const RELEASE_SOURCE_MODES = [
   "manual_dispatch",
-  "trusted_version_pr_merge",
+  "trusted_main_push",
 ];
 export const RELEASE_NOTE_METHODS = [
   {
@@ -282,7 +282,7 @@ export function validatePublishConfirmation({
   releaseSourceMode = "manual_dispatch",
 }) {
   if (String(dryRun) === "true") return;
-  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_version_pr_merge") {
+  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_main_push") {
     return;
   }
   const expected = `PUBLISH v${cleanVersion(version)}`;
@@ -309,9 +309,9 @@ export function validateReleaseTarget({
   releaseSourceMode = "manual_dispatch",
 }) {
   if (String(dryRun) === "true") return;
-  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_version_pr_merge") {
+  if (validateReleaseSourceMode(releaseSourceMode) === "trusted_main_push") {
     if (!/^[0-9a-f]{40}$/i.test(String(targetRef || "").trim())) {
-      fail("trusted release PR merge target must be its 40-character merge commit SHA.");
+      fail("trusted main push target must be its 40-character after commit SHA.");
     }
     return;
   }
@@ -331,10 +331,10 @@ export function validateLiveReleaseSource({
 }) {
   const branch = String(defaultBranch || "main").trim() || "main";
   const sourceMode = validateReleaseSourceMode(releaseSourceMode);
-  if (sourceMode === "trusted_version_pr_merge") {
+  if (sourceMode === "trusted_main_push") {
     if (!targetIsDefaultBranchAncestor) {
       fail(
-        `trusted release PR merge target must be contained in origin/${branch}; refusing a commit outside the protected default branch.`,
+        `trusted main push target must be contained in origin/${branch}; refusing a commit outside the protected default branch.`,
       );
     }
     return;
@@ -1725,7 +1725,7 @@ function releaseContract(repo) {
     release_trigger: "release.published",
     required_webhook_event: "release",
     draft_release_trigger:
-      "same-repository main PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
+      "official main push after an internal or fork PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
     public_release_body:
       "optional_reviewed_file_or_validated_doc_agent_draft_plus_github_whats_changed",
     reviewed_release_notes_path: ".github/release-notes/v<version>.md",
@@ -1739,12 +1739,12 @@ function releaseContract(repo) {
     ],
     live_release_policy: {
       default_entry:
-        "automatic same-repository main PR merge with an all-three-file SemVer increase",
+        "automatic official main push with an all-three-file SemVer increase",
       manual_target_ref: "main",
-      trusted_version_pr_target: "merged version PR commit on main",
+      trusted_main_push_target: "after commit from the official main push",
       manual_exact_confirmation: "PUBLISH v<version>",
       automatic_merge_confirmation:
-        "same-repository merged PR plus a validated three-file SemVer increase",
+        "trusted official main push plus a validated three-file SemVer increase",
       creates_draft_release: true,
       manual_publish_required: true,
       direct_publish_allowed: false,

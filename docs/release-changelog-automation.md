@@ -7,12 +7,13 @@ release flow:
 > special release branch. A release owner chooses `<next-version>` and updates
 > all three version sources in the normal reviewed code PR.
 
-1. Every PR closed against `main` is classified. Unmerged PRs, forks, and PRs
-   with no CLI version change succeed without starting a release.
-2. A same-repository PR merged into `main` creates a Draft Release only when all
-   three version files were changed by that PR, agree on one strict SemVer, and
-   increase from the pre-merge version. Partial updates, mismatches, downgrades,
-   or an existing npm version fail closed before any tag or Release mutation.
+1. Every push that advances the official `main` branch is classified. This
+   happens after either an internal-branch PR or a fork PR is reviewed and
+   merged; the fork itself never receives release secrets or write permission.
+2. The trusted `main` result creates a Draft Release only when all three version
+   files changed in that push, agree on one strict SemVer, and increase from the
+   previous `main` version. Partial updates, mismatches, downgrades, or an
+   existing npm version fail closed before any tag or Release mutation.
 3. The automatic and manual paths compare the previous SemVer tag with the target commit, request
    three bilingual Plugin changelog candidates from Doc Agent, validate the
    selected candidate, and upload a review artifact.
@@ -290,8 +291,9 @@ and has no access to Doc Agent secrets.
 ## Real release procedure
 
 The default path follows the existing CLI development habit: use any normal
-same-repository branch, update the release-ready code and all three version
-files in one reviewed PR, then merge it into `main`.
+branch in this repository or a fork, update the release-ready code and all
+three version files in one reviewed PR, then merge it into the official
+`main`.
 
 ```text
 package.json
@@ -300,9 +302,9 @@ src/memos_cli/__init__.py
 ```
 
 All three files must contain the same new SemVer. The merged workflow compares
-the immutable pre-merge base SHA with the PR merge SHA. If the version did not
-change, it succeeds and skips release work. If the version transition is valid,
-it automatically:
+the immutable `before` and `after` SHAs from the official `main` push. If the
+version did not change, it succeeds and skips release work. If the version
+transition is valid, it automatically:
 
 ```text
 collects evidence
@@ -318,10 +320,14 @@ available for pre-merge dry runs and explicit recovery.
 
 The workflow:
 
-- ignores closed-without-merge PRs, fork PRs, and non-`main` PRs;
-- succeeds without release side effects when a merged PR did not change the CLI version;
+- runs the production path only for a push inside
+  `MemTensor/MemOS-Cloud-CLI` on `refs/heads/main`; a fork can run its own
+  read-only checks but cannot run this production path;
+- treats reviewed internal and fork PRs identically after their result lands on
+  the official `main` branch;
+- succeeds without release side effects when a `main` push did not change the CLI version;
 - requires `package.json`, `pyproject.toml`, and
-  `src/memos_cli/__init__.py` to all be changed by the same PR and contain the
+  `src/memos_cli/__init__.py` to all be changed by the same `main` push and contain the
   same newer strict SemVer;
 - rejects SemVer build metadata and version downgrades in the automatic path;
 - checks npm before automatic GitHub metadata creation. If the version already
@@ -330,8 +336,8 @@ The workflow:
 - does not publish npm or upload OSS binaries in this changelog/Draft workflow;
   those distribution steps remain the CLI release owner's separate responsibility
   until the repository's full Build & Publish contract is deliberately restored;
-- runs workflow code from the protected default branch and requires the merged
-  release commit to be contained in `main`;
+- runs workflow code from the protected default branch and requires the trusted
+  push target to remain contained in `main`;
 - keeps manual live dispatches restricted to the current `main` head;
 - refuses `create_draft_release=false`; every live run must stop at a Draft
   Release for manual review;
@@ -340,9 +346,9 @@ The workflow:
 - refuses a missing previous SemVer tag;
 - refuses to move an existing tag to another commit;
 - rechecks remote `refs/heads/main` immediately before mutation. A manual run
-  still requires exact equality; a trusted release-PR run remains bound to its
-  reviewed merge commit and only tolerates later main commits when that merge
-  commit is still an ancestor of current `main`;
+  still requires exact equality; a trusted automatic run remains bound to its
+  original `after` commit and only tolerates later main commits when that commit
+  is still an ancestor of current `main`;
 - builds only the two targets already supported by this repository;
 - creates or safely resumes a Draft Release;
 - leaves an already-published Release unchanged.
