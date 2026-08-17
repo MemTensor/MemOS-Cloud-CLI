@@ -11,15 +11,15 @@ import {
   applyNpmRegistryGuard,
   automaticRecoveryRequested,
   changedFilesFromGitRange,
-  inspectPullRequestEvent,
+  inspectMainPushEvent,
   inspectVersionTransition,
   validateAutomaticRelease,
   versionsFromGitRef,
 } from "./resolve-cli-release.mjs";
 
 const REPOSITORY = "MemTensor/MemOS-Cloud-CLI";
-const MERGE_SHA = "a".repeat(40);
-const BASE_SHA = "b".repeat(40);
+const AFTER_SHA = "a".repeat(40);
+const BEFORE_SHA = "b".repeat(40);
 
 function versions(version) {
   return Object.fromEntries(VERSION_FILES.map((file) => [file, version]));
@@ -27,13 +27,11 @@ function versions(version) {
 
 function valid(overrides = {}) {
   return {
-    eventName: "pull_request",
-    merged: "true",
-    baseRef: "main",
-    headRepo: REPOSITORY,
+    eventName: "push",
     repository: REPOSITORY,
-    mergeSha: MERGE_SHA,
-    baseSha: BASE_SHA,
+    ref: "refs/heads/main",
+    afterSha: AFTER_SHA,
+    beforeSha: BEFORE_SHA,
     previousVersions: versions("1.0.6"),
     currentVersions: versions("1.0.7"),
     changedFiles: [...VERSION_FILES],
@@ -79,17 +77,17 @@ function commit(root, message) {
   return git(root, ["rev-parse", "HEAD"]);
 }
 
-test("accepts a same-repository main merge when all three versions increase", () => {
+test("accepts an official main push when all three versions increase", () => {
   const result = validateAutomaticRelease(valid());
   assert.equal(result.ok, true);
   assert.equal(result.eligible, true);
   assert.equal(result.previous_version, "1.0.6");
   assert.equal(result.version, "1.0.7");
-  assert.equal(result.target_sha, MERGE_SHA);
+  assert.equal(result.target_sha, AFTER_SHA);
   assert.deepEqual(result.changed_version_files, VERSION_FILES);
 });
 
-test("does not rely on a release branch name", () => {
+test("does not rely on the merged PR repository or branch name", () => {
   const result = validateAutomaticRelease(valid());
   assert.equal(result.eligible, true);
   assert.equal("headRef" in result, false);
@@ -102,7 +100,7 @@ test("only an explicit automatic workflow rerun authorizes orphan-tag recovery",
   assert.equal(automaticRecoveryRequested("invalid"), false);
 });
 
-test("ordinary merged PRs with unchanged versions succeed and skip release", () => {
+test("ordinary main pushes with unchanged versions succeed and skip release", () => {
   const result = validateAutomaticRelease(
     valid({ currentVersions: versions("1.0.6"), changedFiles: [] }),
   );
@@ -111,16 +109,24 @@ test("ordinary merged PRs with unchanged versions succeed and skip release", () 
   assert.match(result.reason, /did not change/);
 });
 
-test("fork, unmerged, and non-main PR events are ignored", () => {
+test("non-main, non-push, and non-official events are ignored", () => {
   for (const input of [
-    valid({ merged: "false" }),
-    valid({ headRepo: "someone/fork" }),
-    valid({ baseRef: "test" }),
+    valid({ eventName: "pull_request" }),
+    valid({ repository: "someone/fork" }),
+    valid({ ref: "refs/heads/test" }),
   ]) {
-    const result = inspectPullRequestEvent(input);
+    const result = inspectMainPushEvent(input);
     assert.equal(result.ok, true);
     assert.equal(result.inspect, false);
   }
+});
+
+test("fork PRs become eligible after their reviewed result advances official main", () => {
+  const result = validateAutomaticRelease(valid());
+  assert.equal(result.ok, true);
+  assert.equal(result.eligible, true);
+  assert.equal(result.target_sha, AFTER_SHA);
+  assert.equal("headRepo" in result, false);
 });
 
 test("fails closed when a version bump omits any of the three version files", () => {
@@ -178,10 +184,12 @@ test("accepts beta increments and beta-to-stable promotion", () => {
   }
 });
 
-test("requires immutable base and merge SHAs", () => {
+test("requires immutable before and after SHAs", () => {
   for (const input of [
-    valid({ mergeSha: "abc123" }),
-    valid({ baseSha: "abc123" }),
+    valid({ afterSha: "abc123" }),
+    valid({ beforeSha: "abc123" }),
+    valid({ beforeSha: "0".repeat(40) }),
+    valid({ beforeSha: AFTER_SHA }),
   ]) {
     const result = validateAutomaticRelease(input);
     assert.equal(result.ok, false);
@@ -201,7 +209,7 @@ test("npm absence allows a new Draft while npm presence requires manual recovery
 
   const existing = applyNpmRegistryGuard({
     result: eligible,
-    npmState: { exists: true, gitHead: MERGE_SHA },
+    npmState: { exists: true, gitHead: AFTER_SHA },
   });
   assert.equal(existing.ok, false);
   assert.equal(existing.eligible, false);
@@ -210,7 +218,7 @@ test("npm absence allows a new Draft while npm presence requires manual recovery
 
   const recovered = applyNpmRegistryGuard({
     result: eligible,
-    npmState: { exists: true, gitHead: MERGE_SHA },
+    npmState: { exists: true, gitHead: AFTER_SHA },
     recoveryAuthorized: true,
   });
   assert.equal(recovered.ok, true);
@@ -223,7 +231,7 @@ test("npm absence allows a new Draft while npm presence requires manual recovery
     npmState: { exists: true, gitHead: "c".repeat(40) },
   });
   assert.equal(conflict.ok, false);
-  assert.match(conflict.reason, /not the reviewed merge commit/);
+  assert.match(conflict.reason, /not the trusted main commit/);
 });
 
 test("manual real runs require explicit recovery when npm already has the version", () => {
@@ -238,7 +246,7 @@ test("manual real runs require explicit recovery when npm already has the versio
   };
   const blocked = applyManualNpmRecoveryGuard({
     result: manual,
-    npmState: { exists: true, gitHead: MERGE_SHA },
+    npmState: { exists: true, gitHead: AFTER_SHA },
   });
   assert.equal(blocked.ok, false);
   assert.equal(blocked.recovery_required, true);
@@ -246,11 +254,11 @@ test("manual real runs require explicit recovery when npm already has the versio
 
   const allowed = applyManualNpmRecoveryGuard({
     result: { ...manual, recover_existing_release: "true" },
-    npmState: { exists: true, gitHead: MERGE_SHA },
+    npmState: { exists: true, gitHead: AFTER_SHA },
   });
   assert.equal(allowed.ok, true);
   assert.equal(allowed.eligible, true);
-  assert.equal(allowed.npm_git_head, MERGE_SHA);
+  assert.equal(allowed.npm_git_head, AFTER_SHA);
 
   const untrusted = applyManualNpmRecoveryGuard({
     result: { ...manual, recover_existing_release: "true" },

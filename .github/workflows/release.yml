@@ -1,10 +1,10 @@
 name: MemOS CLI — Release
 
 on:
-  # Inspect every PR closed against main. Only a same-repository merged PR that
-  # updates all three committed CLI versions to one newer SemVer may release.
-  pull_request:
-    types: [closed]
+  # Inspect the trusted result after any internal or fork PR is merged into the
+  # official main branch. Fork code never receives release secrets or write
+  # permissions; only the resulting push inside this repository may release.
+  push:
     branches: [main]
   workflow_dispatch:
     inputs:
@@ -77,67 +77,30 @@ jobs:
       npm_git_head: ${{ steps.resolve.outputs.npm_git_head }}
       recovery_required: ${{ steps.resolve.outputs.recovery_required }}
     steps:
-      - name: Check merged pull request boundary
-        id: gate
-        shell: bash
-        env:
-          EVENT_NAME: ${{ github.event_name }}
-          PR_MERGED: ${{ github.event.pull_request.merged || false }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
-          REPOSITORY: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          inspect=false
-          reason="manual workflow dispatch"
-          if [ "${EVENT_NAME}" = "pull_request" ]; then
-            reason="closed pull request is not an eligible same-repository main merge"
-            if [ "${PR_MERGED}" = "true" ] && \
-               [ "${PR_BASE_REF}" = "main" ] && \
-               [ "${PR_HEAD_REPO}" = "${REPOSITORY}" ]; then
-              inspect=true
-              reason="same-repository pull request merged into main; inspect committed versions"
-            fi
-          fi
-          {
-            echo "inspect=${inspect}"
-            echo "reason=${reason}"
-          } >> "${GITHUB_OUTPUT}"
-          {
-            echo "## MemOS CLI release trigger"
-            echo
-            echo "- inspect committed version transition: \`${inspect}\`"
-            echo "- result: ${reason}"
-          } >> "${GITHUB_STEP_SUMMARY}"
-
       - uses: actions/checkout@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
         with:
           ref: >-
             ${{
-              github.event_name == 'pull_request' && github.event.pull_request.merge_commit_sha ||
+              github.event_name == 'push' && github.event.after ||
               github.event.repository.default_branch
             }}
           fetch-depth: 0
           persist-credentials: false
 
       - uses: actions/setup-node@v4
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
         with:
           node-version: 22
 
-      - name: Resolve manual or merged version intent
-        if: ${{ github.event_name == 'workflow_dispatch' || steps.gate.outputs.inspect == 'true' }}
+      - name: Resolve manual or merged-main version intent
         id: resolve
         shell: bash
         env:
           EVENT_NAME: ${{ github.event_name }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
-          PR_MERGED: ${{ github.event.pull_request.merged || false }}
-          PR_BASE_REF: ${{ github.event.pull_request.base.ref || '' }}
-          PR_HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name || '' }}
-          PR_MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
-          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_REF: ${{ github.ref }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_AFTER_SHA: ${{ github.event.after }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_VERSION: ${{ inputs.version }}
           INPUT_TARGET_REF: ${{ inputs.target_ref || 'main' }}
           INPUT_DRY_RUN: ${{ inputs.dry_run }}
@@ -153,7 +116,10 @@ jobs:
     runs-on: ubuntu-22.04
     timeout-minutes: 20
     permissions:
-      contents: read
+      # GitHub's generate-notes endpoint requires Contents: write even though
+      # it only returns a preview. The script remains fail-closed and dry-run
+      # still cannot create tags or Releases.
+      contents: write
     outputs:
       current_tag: ${{ steps.prepare.outputs.current_tag }}
       previous_tag: ${{ steps.prepare.outputs.previous_tag }}

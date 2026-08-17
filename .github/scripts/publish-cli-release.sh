@@ -65,7 +65,7 @@ git config --local user.email "41898282+github-actions[bot]@users.noreply.github
 declare -a release_assets
 
 case "${RELEASE_SOURCE_MODE}" in
-  manual_dispatch|trusted_version_pr_merge) ;;
+  manual_dispatch|trusted_main_push) ;;
   *)
     echo "::error::Unknown RELEASE_SOURCE_MODE: ${RELEASE_SOURCE_MODE}"
     exit 1
@@ -288,10 +288,10 @@ ensure_target_is_allowed_main_source() {
     echo "::error::Unable to resolve refs/heads/main immediately before release mutation."
     exit 1
   fi
-  if [[ "${RELEASE_SOURCE_MODE}" == "trusted_version_pr_merge" ]]; then
+  if [[ "${RELEASE_SOURCE_MODE}" == "trusted_main_push" ]]; then
     git fetch --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
     if ! git merge-base --is-ancestor "${TARGET_SHA}" "${remote_main_sha}"; then
-      echo "::error::Release PR merge target ${TARGET_SHA} is not contained in current main ${remote_main_sha}. Refusing to create or update a Draft Release."
+      echo "::error::Trusted main push target ${TARGET_SHA} is not contained in current main ${remote_main_sha}. Refusing to create or update a Draft Release."
       exit 1
     fi
     return 0

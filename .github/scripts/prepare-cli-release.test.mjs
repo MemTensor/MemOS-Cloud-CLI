@@ -454,7 +454,7 @@ test("requires version without v and an exact live confirmation", () => {
       dryRun: "false",
       version: "1.0.7",
       confirmation: "",
-      releaseSourceMode: "trusted_version_pr_merge",
+      releaseSourceMode: "trusted_main_push",
     }),
   );
   assert.equal(validateReleaseSourceMode("manual_dispatch"), "manual_dispatch");
@@ -522,17 +522,17 @@ test("allows non-main target refs only for dry runs", () => {
     validateReleaseTarget({
       dryRun: "false",
       targetRef: "a".repeat(40),
-      releaseSourceMode: "trusted_version_pr_merge",
+      releaseSourceMode: "trusted_main_push",
     }),
   );
   assert.throws(
     () =>
       validateReleaseTarget({
         dryRun: "false",
-        targetRef: "not-a-merge-sha",
-        releaseSourceMode: "trusted_version_pr_merge",
+        targetRef: "not-an-after-sha",
+        releaseSourceMode: "trusted_main_push",
       }),
-    /merge commit SHA/,
+    /after commit SHA/,
   );
 });
 
@@ -596,7 +596,7 @@ test("runs trusted workflow code from the default branch and restricts live targ
       targetSha: "aaa",
       defaultBranchSha: "bbb",
       targetIsDefaultBranchAncestor: true,
-      releaseSourceMode: "trusted_version_pr_merge",
+      releaseSourceMode: "trusted_main_push",
     }),
   );
   assert.throws(
@@ -608,7 +608,7 @@ test("runs trusted workflow code from the default branch and restricts live targ
         targetSha: "aaa",
         defaultBranchSha: "bbb",
         targetIsDefaultBranchAncestor: false,
-        releaseSourceMode: "trusted_version_pr_merge",
+        releaseSourceMode: "trusted_main_push",
       }),
     /contained in origin\/main/,
   );
@@ -965,12 +965,12 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
     assert.equal(contract.required_webhook_event, "release");
     assert.equal(
       contract.draft_release_trigger,
-      "same-repository main PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
+      "official main push after an internal or fork PR merge with an all-three-file SemVer increase, or manual workflow_dispatch",
     );
     assert.deepEqual(contract.product_paths, ["**"]);
     assert.equal(
       contract.live_release_policy.default_entry,
-      "automatic same-repository main PR merge with an all-three-file SemVer increase",
+      "automatic official main push with an all-three-file SemVer increase",
     );
     assert.equal(contract.live_release_policy.creates_draft_release, true);
     assert.equal(contract.live_release_policy.direct_publish_allowed, false);
@@ -994,7 +994,7 @@ test("runs an end-to-end offline dry run and writes the inspection contract", ()
   });
 });
 
-test("prepares an automatic Draft from the reviewed merge commit even after main advances", () => {
+test("prepares an automatic Draft from the trusted main push even after main advances", () => {
   withFixture((root) => {
     git(["branch", "-M", "main"]);
     writeVersions("99.99.99");
@@ -1016,7 +1016,7 @@ test("prepares an automatic Draft from the reviewed merge commit even after main
         DRY_RUN: "false",
         CREATE_DRAFT_RELEASE: "true",
         PUBLISH_CONFIRMATION: "",
-        RELEASE_SOURCE_MODE: "trusted_version_pr_merge",
+        RELEASE_SOURCE_MODE: "trusted_main_push",
         ALLOW_OFFLINE_DOCS_PREVIEW: "true",
         RELEASE_CONTRACT_FIXTURE: "true",
         RUNNER_TEMP: runnerTemp,
@@ -1029,7 +1029,7 @@ test("prepares an automatic Draft from the reviewed merge commit even after main
       readFileSync(join(inspection, "quality-report.json"), "utf8"),
     );
     assert.equal(report.ok, true);
-    assert.equal(report.release_source_mode, "trusted_version_pr_merge");
+    assert.equal(report.release_source_mode, "trusted_main_push");
     assert.equal(report.target_sha, releaseMergeSha);
   }, {
     baselineVersion: "99.99.98",
@@ -1685,21 +1685,15 @@ test("release workflow preserves two existing build targets and uses a draft-fir
   assert.match(workflow, /thirteen_items/);
   assert.match(workflow, /default:\s+true/);
   assert.match(workflow, /PUBLISH v<version>/);
-  assert.match(workflow, /pull_request:/);
-  assert.match(workflow, /types: \[closed\]/);
+  assert.match(workflow, /push:\n\s+branches: \[main\]/);
   assert.match(workflow, /node \.github\/scripts\/resolve-cli-release\.mjs/);
-  assert.match(workflow, /PR_HEAD_REPO/);
-  assert.match(workflow, /PR_BASE_SHA/);
-  assert.match(workflow, /PR_MERGE_SHA/);
-  assert.match(workflow, /id: gate/);
-  assert.match(workflow, /steps\.gate\.outputs\.inspect == 'true'/);
+  assert.match(workflow, /PUSH_REF/);
+  assert.match(workflow, /PUSH_BEFORE_SHA/);
+  assert.match(workflow, /PUSH_AFTER_SHA/);
+  assert.doesNotMatch(workflow, /PR_HEAD_REPO|PR_BASE_SHA|PR_MERGE_SHA/);
   assert.match(
     workflow,
-    /Check merged pull request boundary[\s\S]*?actions\/checkout@v4/,
-  );
-  assert.match(
-    workflow,
-    /resolve:\n[\s\S]*?github\.event\.pull_request\.merge_commit_sha[\s\S]*?persist-credentials: false[\s\S]*?node \.github\/scripts\/resolve-cli-release\.mjs/,
+    /resolve:\n[\s\S]*?github\.event\.after[\s\S]*?persist-credentials: false[\s\S]*?node \.github\/scripts\/resolve-cli-release\.mjs/,
   );
   assert.match(
     workflow,
@@ -1725,7 +1719,18 @@ test("release workflow preserves two existing build targets and uses a draft-fir
   assert.match(workflow, /DOC_AGENT_RELEASE_FAILURE_URL/);
   assert.match(workflow, /if: \$\{\{ always\(\) \}\}/);
   assert.match(workflow, /permissions:\n\s+contents: read/);
-  assert.match(workflow, /prepare:\n[\s\S]*permissions:\n\s+contents: read/);
+  assert.match(
+    workflow,
+    /resolve:\n[\s\S]*?permissions:\n\s+contents: read[\s\S]*?\n  prepare:/,
+  );
+  assert.match(
+    workflow,
+    /prepare:\n[\s\S]*?permissions:[\s\S]*?contents: write[\s\S]*?\n  build:/,
+  );
+  assert.match(
+    workflow,
+    /build:\n[\s\S]*?permissions:\n\s+contents: read[\s\S]*?\n  release:/,
+  );
   assert.match(workflow, /release:\n[\s\S]*permissions:\n\s+contents: write/);
   assert.match(publishScript, /recover_existing_release=true/);
   assert.match(workflow, /ubuntu-22\.04/);
@@ -1751,7 +1756,7 @@ test("release workflow preserves two existing build targets and uses a draft-fir
     /Publish the draft manually to emit release\.published/,
   );
   assert.doesNotMatch(publishScript, /gh release create[\s\S]*--latest/);
-  assert.match(publishScript, /trusted_version_pr_merge/);
+  assert.match(publishScript, /trusted_main_push/);
   assert.match(publishScript, /merge-base --is-ancestor/);
 });
 
@@ -1845,10 +1850,10 @@ test("publish state machine rechecks main before release mutation", () => {
   );
 });
 
-test("publish state machine accepts a trusted merged release boundary still contained in main", () => {
+test("publish state machine accepts a trusted main push target still contained in main", () => {
   const result = runPublishFixture({
     remoteMainSha: "def5678000000000000000000000000000000000",
-    releaseSourceMode: "trusted_version_pr_merge",
+    releaseSourceMode: "trusted_main_push",
   });
   assert.equal(result.failure, undefined);
   assert.match(result.callLog, /git fetch --no-tags origin/);
