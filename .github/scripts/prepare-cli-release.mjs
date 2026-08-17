@@ -742,8 +742,9 @@ export function collectCliEvidence({
       curation_policy: [
         "Summarize only user-visible MemOS CLI changes from the evidence.",
         "Do not present CI, packaging, release automation, or test-only work as product features.",
+        "Use source_refs only from required_source_refs.accepted_refs; omit every item backed only by other commits.",
         "Group related commits into concise Added, Improved, or Fixed bullets.",
-        "Preserve all covered source_refs when commits are grouped.",
+        "Preserve all covered required source_refs when commits are grouped.",
         "Do not mention private endpoints, credentials, internal infrastructure, or raw build paths.",
       ],
     },
@@ -1188,6 +1189,83 @@ function sourceRefMatches(left, right) {
   return false;
 }
 
+export function curateDraftByEvidence(draft, evidence) {
+  if (!evidence.has_user_facing_product_changes) {
+    return {
+      ...draft,
+      evidence_curation: {
+        removed_item_count: 0,
+        removed_source_ref_count: 0,
+        removed_items: [],
+      },
+    };
+  }
+
+  const validRefs = evidence.commits.flatMap(
+    (commit) => commit.source_refs || [],
+  );
+  for (const pull of evidence.pull_requests || []) {
+    validRefs.push(`#${pull.number}`);
+  }
+  const userFacingRefs = (evidence.required_source_refs || []).flatMap(
+    (required) => required.accepted_refs || [],
+  );
+  const matchesAny = (ref, candidates) =>
+    candidates.some((candidate) => sourceRefMatches(ref, candidate));
+
+  const releaseItems = [];
+  const removedItems = [];
+  let removedSourceRefCount = 0;
+  for (const [index, item] of draft.release_items.entries()) {
+    const knownRefs = item.source_refs.filter((ref) =>
+      matchesAny(ref, validRefs),
+    );
+    const eligibleRefs = item.source_refs.filter((ref) =>
+      matchesAny(ref, userFacingRefs),
+    );
+    const unknownRefs = item.source_refs.filter(
+      (ref) => !matchesAny(ref, validRefs),
+    );
+
+    if (
+      item.source_refs.length > 0 &&
+      knownRefs.length === item.source_refs.length &&
+      eligibleRefs.length === 0
+    ) {
+      removedItems.push({
+        index,
+        reason: "only_non_user_facing_source_refs",
+        source_refs: [...item.source_refs],
+      });
+      removedSourceRefCount += item.source_refs.length;
+      continue;
+    }
+
+    if (eligibleRefs.length > 0 && unknownRefs.length === 0) {
+      removedSourceRefCount += item.source_refs.length - eligibleRefs.length;
+      releaseItems.push({
+        ...item,
+        source_refs: [...new Set(eligibleRefs)],
+      });
+      continue;
+    }
+
+    // Preserve empty or unknown refs so deterministic validation still fails
+    // closed instead of hiding malformed Doc Agent output.
+    releaseItems.push(item);
+  }
+
+  return {
+    ...draft,
+    release_items: releaseItems,
+    evidence_curation: {
+      removed_item_count: removedItems.length,
+      removed_source_ref_count: removedSourceRefCount,
+      removed_items: removedItems,
+    },
+  };
+}
+
 export function validateDraft(draft, evidence) {
   const issues = [];
   const validRefs = new Set(
@@ -1409,13 +1487,16 @@ async function requestOneDraft({
 
 export async function requestDocAgentDraft(evidence) {
   if (!evidence.has_user_facing_product_changes) {
-    const draft = normalizeDraft({
-      ok: true,
-      needs_review: false,
-      confidence: "high",
-      warnings: [evidence.skip_reason],
-      release_items: [],
-    });
+    const draft = curateDraftByEvidence(
+      normalizeDraft({
+        ok: true,
+        needs_review: false,
+        confidence: "high",
+        warnings: [evidence.skip_reason],
+        release_items: [],
+      }),
+      evidence,
+    );
     return {
       ...draft,
       validation_report: validateDraft(draft, evidence),
@@ -1430,7 +1511,10 @@ export async function requestDocAgentDraft(evidence) {
     process.env.DOC_AGENT_RELEASE_NOTES_DRAFT_TOKEN || "",
   ).trim();
   if ((!url || !token) && process.env.ALLOW_OFFLINE_DOCS_PREVIEW === "true") {
-    const draft = normalizeDraft(offlineDraft(evidence));
+    const draft = curateDraftByEvidence(
+      normalizeDraft(offlineDraft(evidence)),
+      evidence,
+    );
     return {
       ...draft,
       validation_report: validateDraft(draft, evidence),
@@ -1461,11 +1545,14 @@ export async function requestDocAgentDraft(evidence) {
         repairContext: null,
         history: [],
       });
-      const draft = injectDraftFault(
-        normalizeDraft(payload),
+      const draft = curateDraftByEvidence(
+        injectDraftFault(
+          normalizeDraft(payload),
+          evidence,
+          faultCase,
+          { validationRound: 1 },
+        ),
         evidence,
-        faultCase,
-        { validationRound: 1 },
       );
       const validation = validateDraft(draft, evidence);
       candidates.push({
@@ -1553,7 +1640,9 @@ export async function requestDocAgentDraft(evidence) {
       "Use only facts present in the evidence.",
       "Return concise Added, Improved, or Fixed release_items.",
       "Each item must contain text_cn, text_en, and valid source_refs.",
-      "Merge duplicate topics while preserving all source_refs.",
+      "Use source_refs only from required_source_refs.accepted_refs.",
+      "Delete every item backed only by commits outside required_source_refs.",
+      "Merge duplicate topics while preserving every eligible source_ref from required_source_refs.",
       "Do not expose internal infrastructure or copy raw commit subjects.",
     ],
   };
@@ -1579,11 +1668,14 @@ export async function requestDocAgentDraft(evidence) {
       });
       throw error;
     }
-    const draft = injectDraftFault(
-      normalizeDraft(payload),
+    const draft = curateDraftByEvidence(
+      injectDraftFault(
+        normalizeDraft(payload),
+        evidence,
+        faultCase,
+        { validationRound: repairAttempt + 1 },
+      ),
       evidence,
-      faultCase,
-      { validationRound: repairAttempt + 1 },
     );
     const validation = validateDraft(draft, evidence);
     if (!validation.ok) {
@@ -2133,6 +2225,7 @@ async function main() {
       confidence: draft.confidence,
       release_items: draft.release_items,
       candidate_selection: draft.candidate_selection,
+      evidence_curation: draft.evidence_curation,
       validation_report: draft.validation_report,
       validation_attempt_count: draft.validation_attempt_count,
       repair_attempt_count: draft.repair_attempt_count,
@@ -2166,6 +2259,7 @@ async function main() {
       validation: draft.validation_report,
       coverage: draft.validation_report.coverage,
       candidate_selection: draft.candidate_selection,
+      evidence_curation: draft.evidence_curation,
       methodology: RELEASE_NOTE_METHODS,
       warnings: [...draft.warnings, releaseNotes.warning].filter(Boolean),
     });
