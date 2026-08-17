@@ -48,6 +48,7 @@ class AgentConfig:
     guidance_file: str
     guidance_home: Path | None = None
     guidance_mode: str = "upsert"  # "upsert" | "standalone"
+    skills_namespace: str | None = "memos"
 
 
 AGENT_REGISTRY: dict[str, AgentConfig] = {
@@ -66,6 +67,8 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
     "cline":       AgentConfig(Path.home() / ".cline" / "skills",                    "memos.md", 
                                Path.home() / ".cline" / "rules", "standalone"),
     "copilot":     AgentConfig(Path.home() / ".copilot" / "skills",                  "copilot-instructions.md"),
+    "deepseek":    AgentConfig(Path.home() / ".dsh" / "skills",                      "AGENTS.md",
+                               skills_namespace=None),
 }
 
 SUPPORTED_SKILL_AGENTS: dict[str, Path] = {
@@ -111,6 +114,11 @@ def _resolve_skills_dir(agent: str) -> Path:
         if codex_home:
             return Path(codex_home).expanduser() / "skills"
 
+    if normalized == "deepseek":
+        dsh_home = os.getenv("DSH_HOME")
+        if dsh_home and dsh_home.strip():
+            return Path(os.path.abspath(Path(dsh_home).expanduser())) / "skills"
+
     cfg = AGENT_REGISTRY.get(normalized)
     target = SUPPORTED_SKILL_AGENTS.get(normalized)
     if target is None and cfg is None:
@@ -125,8 +133,11 @@ def _install_bundled_skills(agent: str) -> Path:
     if not source_dir.exists():
         raise FileNotFoundError(f"Bundled skills directory not found: {source_dir}")
 
+    normalized = agent.strip().lower()
+    cfg = AGENT_REGISTRY.get(normalized)
     target_root = _resolve_skills_dir(agent)
-    memos_target = target_root / "memos"
+    skills_namespace = cfg.skills_namespace if cfg else "memos"
+    memos_target = target_root / skills_namespace if skills_namespace else target_root
     memos_target.mkdir(parents=True, exist_ok=True)
 
     source_skill = source_dir / "memos-memory"
@@ -143,7 +154,11 @@ def _install_bundled_skills(agent: str) -> Path:
 
 def _remove_bundled_skills(agent: str) -> list[Path]:
     """Remove bundled MemOS operation skill from the global skills directory."""
-    target_root = _resolve_skills_dir(agent) / "memos"
+    normalized = agent.strip().lower()
+    cfg = AGENT_REGISTRY.get(normalized)
+    skills_namespace = cfg.skills_namespace if cfg else "memos"
+    skills_dir = _resolve_skills_dir(agent)
+    target_root = skills_dir / skills_namespace if skills_namespace else skills_dir
     destination = target_root / "memos-memory"
     removed: list[Path] = []
 
@@ -151,10 +166,11 @@ def _remove_bundled_skills(agent: str) -> list[Path]:
         shutil.rmtree(destination)
         removed.append(destination)
 
-    try:
-        target_root.rmdir()
-    except OSError:
-        pass
+    if skills_namespace:
+        try:
+            target_root.rmdir()
+        except OSError:
+            pass
 
     return removed
 

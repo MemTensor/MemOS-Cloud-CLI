@@ -111,6 +111,9 @@ Supported targets:
 - `--agent workbuddy` → `~/.codebuddy/skills/memos/`
 - `--agent cline` → `~/.cline/skills/memos/`
 - `--agent copilot` → `~/.copilot/skills/memos/`
+- `--agent deepseek` → `~/.dsh/skills/memos-memory/` (or `$DSH_HOME/skills/memos-memory/`)
+
+For DeepSeek Harness, the matching guidance is written to `~/.dsh/AGENTS.md`, or `$DSH_HOME/AGENTS.md` when `DSH_HOME` is set.
 
 Or with arguments:
 

@@ -49,6 +49,20 @@ class GuidancePathResolutionTests(unittest.TestCase):
                         [codex_home / "AGENTS.md"],
                     )
 
+    def test_deepseek_paths_honor_dsh_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            dsh_home = Path(temp_dir) / "custom-dsh-home"
+
+            with patch.dict("os.environ", {"DSH_HOME": str(dsh_home)}, clear=False):
+                self.assertEqual(
+                    init._resolve_skills_dir("deepseek"),
+                    dsh_home / "skills",
+                )
+                self.assertEqual(
+                    init._resolve_guidance_files("deepseek"),
+                    [dsh_home / "AGENTS.md"],
+                )
+
     def test_openclaw_guidance_updates_existing_agents_files_and_workspace_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             root = Path(temp_dir)
@@ -428,6 +442,44 @@ class GuidancePathResolutionTests(unittest.TestCase):
             self.assertEqual(removed, [installed])
             self.assertFalse(installed.exists())
             self.assertFalse((root / ".cursor" / "skills" / "memos").exists())
+
+    def test_deepseek_installs_and_removes_single_level_skill_bundle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            bundle_root = root / "bundle"
+            source_skill = bundle_root / "skills" / "memos-memory"
+            source_skill.mkdir(parents=True)
+            (source_skill / "SKILL.md").write_text("skill\n", encoding="utf-8")
+            skills_dir = root / ".dsh" / "skills"
+            installed = skills_dir / "memos-memory"
+
+            with patch.dict("os.environ", {"DSH_HOME": ""}, clear=False):
+                with patch.dict(init.SUPPORTED_SKILL_AGENTS, {"deepseek": skills_dir}, clear=True):
+                    with patch.object(init, "_bundle_root", return_value=bundle_root):
+                        installed_root = init._install_bundled_skills("deepseek")
+                    self.assertEqual(
+                        (installed / "SKILL.md").read_text(encoding="utf-8"),
+                        "skill\n",
+                    )
+                    removed = init._remove_bundled_skills("deepseek")
+
+            self.assertEqual(installed_root, skills_dir)
+            self.assertEqual(removed, [installed])
+            self.assertFalse(installed.exists())
+            self.assertTrue(skills_dir.exists())
+            self.assertFalse((skills_dir / "memos").exists())
+
+    def test_bundled_skill_metadata_and_uninstall_examples_are_agent_neutral(self) -> None:
+        skill = (init._bundle_root() / "skills" / "memos-memory" / "SKILL.md").read_text(
+            encoding="utf-8",
+        )
+        guidance = init._guidance_template_path().read_text(encoding="utf-8")
+
+        self.assertIn("\nname: memos-memory\n", skill)
+        self.assertNotIn("--agent codex", skill)
+        self.assertIn("--agent <CURRENT_AGENT> --yes", skill)
+        self.assertNotIn("--agent codex", guidance)
+        self.assertIn("--agent <current_agent> --yes", guidance)
 
     def test_uninstall_standalone_guidance_keeps_empty_file(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
