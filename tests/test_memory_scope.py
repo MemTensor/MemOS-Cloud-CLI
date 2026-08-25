@@ -9,6 +9,8 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+import typer
+
 from memos_cli.backend.memory_api import MemoryAPI
 from memos_cli.backend.transport import APIError
 from memos_cli.commands import memory, memory_cmd
@@ -50,15 +52,21 @@ class AddMemoryScopeTests(unittest.TestCase):
 
         self.assertIn("Add memory requires user_id", str(raised.exception))
 
-    def test_search_memories_keeps_empty_string_scope_consistent(self) -> None:
+    def test_search_memories_drops_empty_string_scope(self) -> None:
+        """search must treat "" the same way add/get do: reject as an unscoped read.
+
+        add_memory and get_memories both raise on falsy user_id. Sending user_id=""
+        to /search/memory would filter the server-side query by an empty scope and
+        never return memories written under a real user, silently reproducing the
+        invisible-scope bug #34 was meant to fix.
+        """
         transport = RecordingTransport()
         api = MemoryAPI(transport)
 
         api.search_memories("greens", user_id="")
 
         body = transport.calls[0][2]["json_body"]
-        self.assertIn("user_id", body)
-        self.assertEqual(body["user_id"], "")
+        self.assertNotIn("user_id", body)
 
 
 class ResolveScopeTests(unittest.TestCase):
@@ -116,8 +124,8 @@ class ListAliasTests(unittest.TestCase):
     def test_main_registers_list_command(self) -> None:
         from memos_cli import main
 
-        command_names = {cmd.name for cmd in main.app.registered_commands}
-        self.assertIn("list", command_names)
+        click_group = typer.main.get_command(main.app)
+        self.assertIn("list", click_group.commands)
 
     def test_cmd_get_outputs_list_command_name_in_agent_mode(self) -> None:
         config = MemOSConfig(

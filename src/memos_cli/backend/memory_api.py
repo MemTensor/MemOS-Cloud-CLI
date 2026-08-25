@@ -145,9 +145,11 @@ class MemoryAPI:
             "memory_limit_number": limit,
             "include_preference": kwargs.get("include_preference", True),
         }
-        # Only include non-None values; use the same `is not None` scoping rules
-        # as add_memory/get_memories so a resolved empty string is not silently dropped.
-        if kwargs.get("user_id") is not None:
+        # Skip both None and empty strings so the read contract matches the write
+        # contract in add_memory/get_memories (both raise on falsy user_id). Sending
+        # user_id="" to /search/memory would filter by an empty scope on the server,
+        # which never matches any memory written with a real user_id.
+        if kwargs.get("user_id") not in (None, ""):
             payload["user_id"] = kwargs["user_id"]
         if kwargs.get("conversation_id") is not None:
             payload["conversation_id"] = kwargs["conversation_id"]
