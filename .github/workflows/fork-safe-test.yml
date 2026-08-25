@@ -1,0 +1,137 @@
+name: MemOS CLI — Safe Test & Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: memos-cli-safe-test-${{ github.repository }}-${{ github.ref }}
+  cancel-in-progress: true
+
+# This workflow is safe to run in a fork. It never receives release secrets and
+# cannot create tags, GitHub Releases, npm packages, docs PRs, or deployments.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: Python tests and CLI smoke test
+    runs-on: ubuntu-22.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install MemOS CLI
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e .
+
+      - name: Run Python unit tests
+        run: python -m unittest discover -s tests -p "test_*.py"
+
+      - name: Check installed CLI
+        run: |
+          memos --version
+          memos --help
+
+  build:
+    name: Build and smoke test (${{ matrix.artifact_suffix }})
+    needs: test
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-22.04
+            artifact_suffix: linux-x64
+          - os: windows-2022
+            artifact_suffix: windows-x64
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Upgrade pip
+        run: python -m pip install --upgrade pip
+
+      - name: Build Linux archive
+        if: runner.os == 'Linux'
+        shell: bash
+        run: bash scripts/build-binary.sh
+
+      - name: Build Windows archive
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: pwsh -File scripts/build-binary.ps1
+
+      - name: Smoke test Linux binary
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/memos-cli-smoke"
+          tar -xzf dist/memos-*-linux-x64.tar.gz -C "${RUNNER_TEMP}/memos-cli-smoke"
+          "${RUNNER_TEMP}/memos-cli-smoke/memos" --version
+          "${RUNNER_TEMP}/memos-cli-smoke/memos" --help
+
+      - name: Smoke test Windows binary
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $SmokeDir = Join-Path $env:RUNNER_TEMP "memos-cli-smoke"
+          New-Item -ItemType Directory -Force -Path $SmokeDir | Out-Null
+          tar -xzf (Get-ChildItem "dist/memos-*-windows-x64.tar.gz").FullName -C $SmokeDir
+          & (Join-Path $SmokeDir "memos.exe") --version
+          & (Join-Path $SmokeDir "memos.exe") --help
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: memos-cli-safe-${{ matrix.artifact_suffix }}
+          path: dist/*.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Explain artifact scope on Linux
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          {
+            echo "## Safe test build"
+            echo
+            echo "- repository: ${GITHUB_REPOSITORY}"
+            echo "- commit: ${GITHUB_SHA}"
+            echo "- artifact: memos-cli-safe-${{ matrix.artifact_suffix }}"
+            echo
+            echo "This is a temporary test artifact only. No tag, GitHub Release, npm package, Doc Agent request, docs PR, or deployment was created."
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Explain artifact scope on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          @"
+          ## Safe test build
+
+          - repository: $env:GITHUB_REPOSITORY
+          - commit: $env:GITHUB_SHA
+          - artifact: memos-cli-safe-${{ matrix.artifact_suffix }}
+
+          This is a temporary test artifact only. No tag, GitHub Release, npm package, Doc Agent request, docs PR, or deployment was created.
+          "@ | Add-Content -Path $env:GITHUB_STEP_SUMMARY
