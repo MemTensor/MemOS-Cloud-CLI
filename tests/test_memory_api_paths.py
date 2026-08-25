@@ -36,6 +36,20 @@ class MemoryAPIPathTests(unittest.TestCase):
         self.assertEqual(transport.calls[0][1], "/search/memory")
         self.assertEqual(transport.calls[0][2]["json_body"]["knowledgebase_ids"], ["base123"])
 
+    def test_get_memories_forwards_conversation_id(self) -> None:
+        transport = RecordingTransport()
+        api = MemoryAPI(transport)
+
+        api.get_memories(user_id="user_1", conversation_id="conv_1", page=2, size=25)
+
+        self.assertEqual(len(transport.calls), 1)
+        self.assertEqual(transport.calls[0][1], "/get/memory")
+        body = transport.calls[0][2]["json_body"]
+        self.assertEqual(body["user_id"], "user_1")
+        self.assertEqual(body["conversation_id"], "conv_1")
+        self.assertEqual(body["page"], 2)
+        self.assertEqual(body["size"], 25)
+
 
 if __name__ == "__main__":
     unittest.main()

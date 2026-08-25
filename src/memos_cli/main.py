@@ -14,7 +14,7 @@ from memos_cli import __version__
 from memos_cli.completion import register_completion_compat
 from memos_cli.commands.init import init_cmd, uninstall_cmd
 from memos_cli.commands.config_cmd import config_app
-from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, delete, origin
+from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, list, delete, origin
 from memos_cli.commands.message import message, status
 from memos_cli.commands.kb import kb_app
 from memos_cli.state import set_runtime_options
@@ -34,6 +34,7 @@ class CommandFirstTyperGroup(TyperGroup):
         "add",
         "search",
         "get",
+        "list",
         "origin",
         "delete",
         "extract",
@@ -136,6 +137,7 @@ app.command(rich_help_panel="Memory Operations")(extract)
 app.command(rich_help_panel="Memory Operations")(feedback)
 app.command(rich_help_panel="Memory Operations")(search)
 app.command(rich_help_panel="Memory Operations")(get)
+app.command(rich_help_panel="Memory Operations")(list)
 app.command(rich_help_panel="Memory Operations")(origin)
 app.command(rich_help_panel="Memory Operations")(delete)
 

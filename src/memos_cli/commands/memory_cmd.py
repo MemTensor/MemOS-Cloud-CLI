@@ -612,6 +612,7 @@ def cmd_chat(
 def cmd_get(
     *,
     user_id: str | None,
+    conversation_id: str | None,
     page: int | None,
     size: int | None,
     include_preference: str | None,
@@ -619,15 +620,27 @@ def cmd_get(
     output_format: str,
     detail: str,
 ) -> None:
-    """Execute get."""
+    """Execute get.
+
+    The read path must use the same conversation scope as the write path
+    (``cmd_add``): the server stores memories keyed by ``conversation_id``,
+    so listing without one silently misses records added to the default
+    conversation.
+    """
     start_time = time.time()
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
     try:
         config, backend = _load_backend()
         final_user_id = user_id or config.defaults.user_id
+        final_conversation_id = (
+            conversation_id
+            or config.defaults.conversation_id
+            or DEFAULT_CONVERSATION_ID
+        )
         response = backend.get_memories(
             user_id=final_user_id,
+            conversation_id=final_conversation_id,
             page=page,
             size=size,
             include_preference=parse_bool_option(include_preference, option_name="--include-preference"),
@@ -645,7 +658,7 @@ def cmd_get(
             data=memories,
             duration_ms=duration_ms,
             count=len(memories),
-            scope={"user_id": final_user_id},
+            scope={"user_id": final_user_id, "conversation_id": final_conversation_id},
             detail=final_detail,
         )
         return

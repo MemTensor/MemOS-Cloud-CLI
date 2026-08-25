@@ -24,6 +24,7 @@ Common flags:
 
 - `[USER_ID]`
 - `--user-id`
+- `--conversation-id`
 - `--page`
 - `--size`
 - `--filter`
@@ -35,9 +36,11 @@ Common flags:
 Example:
 
 ```bash
-memos get user_123 --format json --detail detail
+memos get user_123 --conversation-id conv_001 --format json --detail detail
 ```
 
 Working rules:
-- `get` returns scoped records for the requested `user_id`;
+- `get` returns scoped records for the requested `user_id` and `conversation_id`;
+- when `--conversation-id` is omitted, the CLI uses the configured `defaults.conversation_id`; pass the same conversation used by `memos add` so reads see the records just written;
+- `memos list` is an alias of `memos get` and accepts the same flags;
 - do not prepend `memos --help` when `get` is the already known goal.
