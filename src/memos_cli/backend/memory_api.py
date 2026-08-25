@@ -55,13 +55,20 @@ class MemoryAPI:
         raise APIError("Unable to reach MemOS API with the configured base URL")
 
     def add_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        """Add messages."""
+        """Add messages scoped to a user."""
+        # Reads (get_memories, chat) require user_id; writes must be scoped to the
+        # same resolver so a memory is never stored without a user scope. Otherwise a
+        # record written unscoped is silently invisible to the scoped read path.
+        user_id = kwargs.get("user_id")
+        if not user_id:
+            raise APIError("Add memory requires user_id")
+
         message_payload: dict[str, Any] = {
             "messages": messages,
+            "user_id": user_id,
         }
 
         common_fields = [
-            "user_id",
             "conversation_id",
             "agent_id",
             "app_id",
@@ -138,14 +145,15 @@ class MemoryAPI:
             "memory_limit_number": limit,
             "include_preference": kwargs.get("include_preference", True),
         }
-        # Only include non-None values
-        if kwargs.get("user_id"):
+        # Only include non-None values; use the same `is not None` scoping rules
+        # as add_memory/get_memories so a resolved empty string is not silently dropped.
+        if kwargs.get("user_id") is not None:
             payload["user_id"] = kwargs["user_id"]
-        if kwargs.get("conversation_id"):
+        if kwargs.get("conversation_id") is not None:
             payload["conversation_id"] = kwargs["conversation_id"]
-        if kwargs.get("agent_id"):
+        if kwargs.get("agent_id") is not None:
             payload["agent_id"] = kwargs["agent_id"]
-        if kwargs.get("app_id"):
+        if kwargs.get("app_id") is not None:
             payload["app_id"] = kwargs["app_id"]
         if kwargs.get("filter") is not None:
             payload["filter"] = kwargs["filter"]

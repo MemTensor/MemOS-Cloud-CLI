@@ -618,8 +618,9 @@ def cmd_get(
     include_tool_memory: str | None,
     output_format: str,
     detail: str,
+    command_name: str = "get",
 ) -> None:
-    """Execute get."""
+    """Execute get (also available as `list`, an alias for the same operation)."""
     start_time = time.time()
     final_output = resolve_output_format(output_format)
     final_detail = validate_detail(detail)
@@ -641,7 +642,7 @@ def cmd_get(
     if final_output == "agent":
         format_agent_envelope(
             console,
-            command="get",
+            command=command_name,
             data=memories,
             duration_ms=duration_ms,
             count=len(memories),

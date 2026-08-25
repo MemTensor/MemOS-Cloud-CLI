@@ -53,6 +53,8 @@ Commands:
 - `memos get "$MEMORY_ID" --format json --detail detail`
 - `memos delete "$MEMORY_ID" --format json`
 
+> 说明：`memos list` 是 `memos get` 的别名——两者都在当前 `user_id` 作用域下列出记忆，参数与输出格式完全一致。
+
 
 ```
 
