@@ -1,6 +1,10 @@
 """Main CLI application — the entrypoint for `memos`."""
 from __future__ import annotations
 
+from memos_cli.stdio import configure_windows_stdio
+
+configure_windows_stdio()
+
 import click
 import typer
 from rich.console import Console
