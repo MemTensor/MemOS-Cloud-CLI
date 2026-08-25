@@ -31,10 +31,11 @@ MemOS-CLI/
 │       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
 │       └── kb_cmd.py        # 知识库命令执行层
 │   └── hooks/               # 宿主原生 Hook 适配器
-│       ├── runner.py        # Codex stdin/stdout 生命周期运行器
-│       ├── codex.py         # Codex payload 和 transcript 解析
+│       ├── agents.py        # 原生 Hook agent 注册表
+│       ├── runner.py        # stdin/stdout 生命周期运行器
+│       ├── codex.py         # 通用 payload 和 transcript 解析
 │       ├── state_store.py   # 跨进程回合状态
-│       └── installer.py     # 安全合并/卸载 hooks.json
+│       └── installer.py     # 安全合并/卸载 Hook 配置
 ├── skills/
 │   └── memos-memory/        # 记忆领域 skill
 │       ├── SKILL.md         # Skill 入口与使用规范
@@ -95,21 +96,28 @@ npm uninstall -g @memtensor/memos-cloud-cli
 memos init --agent codex
 ```
 
-对于 Codex，该命令会一次安装完整 MemOS 集成：API 配置、管理型 Skill、原生 Hook、Hook-aware guidance 和 CLI PATH。Hook 会在 `UserPromptSubmit` 自动检索，在 `Stop` 自动保存完整回合。
+对于支持 Hook 的 agent，该命令会一次安装完整 MemOS 集成：API 配置、管理型 Skill、原生 Hook、Hook-aware guidance 和 CLI PATH。Hook 会在模型调用前自动检索，在回复完成后自动保存完整回合。
 `--agent` 为必填项，不支持安装到通用全局目录。
-`--memos-plugin` 是非 Codex 目标的旧兼容选项，在 Codex 下会被忽略。
+`--memos-plugin` 是非 Hook 目标的旧兼容选项；当目标支持原生 Hook 时会被忽略。
 当 shell 能被识别时，该命令也会自动安装命令补全。
 
-### Codex 原生 Hook
+### 原生 Hook
 
-Codex 原生 Hook 与完整集成统一安装、统一卸载：
+原生 Hook 与目标 agent 的完整集成统一安装、统一卸载：
 
 ```bash
 memos init --agent codex
 memos uninstall --agent codex --yes
 ```
 
-Codex 安装的是管理型 Skill，不会重复 Hook 的自动 search/add。安装器只合并 MemOS 自己管理的 `~/.codex/hooks.json` 条目，保留其他 Hook，重复安装幂等。API Key 仍保存在 `~/.memos/config.yaml`，不会写入 Codex 配置或 Hook 状态文件。`memos hook run --agent codex` 是 Codex 内部调用命令；MemOS 故障时会 fail-open，不阻断宿主会话。
+安装后的 Skill 只负责显式管理，不会重复 Hook 的自动 search/add。安装器只更新 MemOS 自己管理的 hook 条目或插件，保留其他 Hook/插件，重复安装幂等。API Key 仍保存在 `~/.memos/config.yaml`，不会写入 agent 的 Hook 配置、插件或 Hook 状态文件。`memos hook run --agent <agent> --event <event>` 是宿主内部调用命令；MemOS 故障时会 fail-open，不阻断宿主会话。
+
+原生 Hook 生命周期：
+- Codex / Claude Code：`UserPromptSubmit` → search，`Stop` → add
+- Cursor：`beforeSubmitPrompt` → search，`afterAgentResponse` → add
+- Hermes：用户插件 `~/.hermes/plugins/memos-memory/` 在 CLI / TUI / Gateway / Desktop 中注册 `pre_llm_call` → search、`post_llm_call` → add；插件通过 `~/.hermes/config.yaml` 的 `plugins.enabled` 启用
+- OpenCode V2：`ctx.session.hook("context")` → search，`session.idle` → add
+- OpenClaw：`before_prompt_build` → search，`agent_end` → add
 
 支持的目标：
 - `--agent codex` → `~/.codex/skills/memos/`
@@ -120,7 +128,7 @@ Codex 安装的是管理型 Skill，不会重复 Hook 的自动 search/add。安
 - `--agent trae` → `~/.trae/skills/memos/`
 - `--agent trae-cn` → `~/.trae-cn/skills/memos/`
 - `--agent opencode` → `~/.config/opencode/skills/memos/`
-- `--agent antigravity` → `~/.gemini/antigravity/skills/memos/`
+- `--agent antigravity` → `~/.gemini/config/skills/`
 - `--agent workbuddy` → `~/.codebuddy/skills/memos/`
 - `--agent cline` → `~/.cline/skills/memos/`
 - `--agent copilot` → `~/.copilot/skills/memos/`

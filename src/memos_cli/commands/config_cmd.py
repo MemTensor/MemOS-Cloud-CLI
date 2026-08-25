@@ -37,6 +37,7 @@ def config_show():
             console.print(f"  App ID: {config.defaults.app_id}")
         if config.defaults.run_id:
             console.print(f"  Run ID: {config.defaults.run_id}")
+        console.print(f"  Multi-view enabled: {config.defaults.multi_view_enabled}")
 
 
 @config_app.command("get")

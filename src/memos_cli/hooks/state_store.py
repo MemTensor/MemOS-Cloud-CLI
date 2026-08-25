@@ -1,4 +1,4 @@
-"""Persistent, private state used to connect Codex hook events."""
+"""Persistent, private state used to connect native hook events."""
 from __future__ import annotations
 
 import hashlib
@@ -10,6 +10,8 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable
+
+from .agents import DEFAULT_HOOK_AGENT
 
 
 def _utc_now() -> datetime:
@@ -46,6 +48,7 @@ class HookTurnState:
         session_key: str,
         conversation_id: str,
         prompt: str,
+        agent: str = DEFAULT_HOOK_AGENT,
         host_turn_id: str | None = None,
         workspace_path: str | None = None,
         now: datetime | None = None,
@@ -53,7 +56,7 @@ class HookTurnState:
         timestamp = now or _utc_now()
         return cls(
             version=1,
-            agent="codex",
+            agent=agent,
             session_key=session_key,
             conversation_id=conversation_id,
             prompt=prompt,
@@ -66,7 +69,7 @@ class HookTurnState:
     def from_dict(cls, data: dict[str, Any]) -> "HookTurnState":
         return cls(
             version=int(data.get("version", 1)),
-            agent=str(data.get("agent", "codex")),
+            agent=str(data.get("agent", DEFAULT_HOOK_AGENT)),
             session_key=str(data["session_key"]),
             conversation_id=str(data["conversation_id"]),
             prompt=str(data["prompt"]),
@@ -83,10 +86,12 @@ class HookStateStore:
         self,
         root: Path | None = None,
         *,
+        agent: str = DEFAULT_HOOK_AGENT,
         ttl_seconds: int = 24 * 60 * 60,
         now: Callable[[], datetime] = _utc_now,
     ) -> None:
-        self.root = (root or (Path.home() / ".memos" / "hook-state" / "codex")).expanduser()
+        self.agent = agent.strip().lower() or DEFAULT_HOOK_AGENT
+        self.root = (root or (Path.home() / ".memos" / "hook-state" / self.agent)).expanduser()
         self.ttl_seconds = ttl_seconds
         self._now = now
 
@@ -149,6 +154,41 @@ class HookStateStore:
         except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
             return None
 
+    def consume(self, session_key: str, host_turn_id: str | None = None) -> HookTurnState | None:
+        """Atomically claim and remove one pending turn state.
+
+        Multiple host surfaces can report the same completed turn at nearly
+        the same time (for example Cline's AgentPlugin and its IDE
+        ``TaskComplete`` file hook).  A read followed by a later delete lets
+        both processes observe the same state and both call ``memos add``.
+        Renaming the state file first makes the claim atomic: only one
+        process can move it out of the pending namespace.
+        """
+        self.cleanup()
+        path = self.path_for(session_key, host_turn_id)
+        temporary_name: str | None = None
+        try:
+            fd, temporary_name = tempfile.mkstemp(prefix=".consumed-", suffix=".json", dir=self.root)
+            os.close(fd)
+            os.unlink(temporary_name)
+            os.replace(path, temporary_name)
+            with open(temporary_name, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            if not isinstance(data, dict):
+                return None
+            state = HookTurnState.from_dict(data)
+            if state.session_key != session_key:
+                return None
+            return state
+        except (FileNotFoundError, OSError, ValueError, TypeError, KeyError, json.JSONDecodeError):
+            return None
+        finally:
+            if temporary_name:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
+
     def delete(self, session_key: str, host_turn_id: str | None = None) -> bool:
         try:
             self.path_for(session_key, host_turn_id).unlink()
@@ -198,6 +238,3 @@ class HookStateStore:
         except OSError:
             pass
         return removed
-
-
-CodexStateStore = HookStateStore
