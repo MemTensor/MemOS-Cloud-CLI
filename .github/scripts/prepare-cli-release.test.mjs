@@ -107,7 +107,7 @@ function commit(message, body = "") {
 function withFixture(
   fn,
   {
-    baselineVersion = "0.1.0-beta.14",
+    baselineVersion = "1.0.6",
     baselineTag = `v${baselineVersion}`,
   } = {},
 ) {
@@ -371,7 +371,7 @@ const evidence = {
   ],
   has_user_facing_product_changes: true,
   repo: "MemTensor/MemOS-Cloud-CLI",
-  previous_tag: "v0.1.0-beta.14",
+  previous_tag: "v1.0.6",
   current_tag: "v1.0.7",
   target_version: "v1.0.7",
   git_ref: "def5678",
@@ -400,16 +400,16 @@ test("uses SemVer precedence instead of lexical ordering", () => {
   assert.equal(compareSemver("1.0.0+build.2", "1.0.0+build.1"), 0);
   assert.equal(
     findPreviousTag("1.0.7", "v1.0.7", [
-      "v0.1.0-beta.14",
+      "v1.0.6",
       "v1.0.7-beta.1",
       "v1.0.7",
       "not-a-release",
     ]),
-    "v0.1.0-beta.14",
+    "v1.0.6",
   );
   assert.equal(
     findPreviousTag("1.0.7-beta.10", "v1.0.7-beta.10", [
-      "v0.1.0-beta.14",
+      "v1.0.6",
       "v1.0.7-beta.9",
       "v1.0.7-beta.2",
     ]),
@@ -706,7 +706,7 @@ test("requires all three CLI version sources to match", () => {
     () =>
       validateVersionSources("1.0.7", {
         package_json: "1.0.7",
-        pyproject_toml: "0.1.0-beta.14",
+        pyproject_toml: "1.0.6",
         python_init: "1.0.7",
       }),
     /pyproject_toml=1\.0\.6/,
@@ -735,7 +735,7 @@ test("collects the entire standalone CLI repository but filters release noise", 
     commit("feat: modify version to 1.0.7");
 
     const result = collectCliEvidence({
-      previousTag: "v0.1.0-beta.14",
+      previousTag: "v1.0.6",
       currentTag: "v1.0.7",
       currentRef: "HEAD",
       targetVersion: "1.0.7",
@@ -772,7 +772,7 @@ test("does not publish a docs item for automation-only changes", () => {
     write(".github/workflows/release.yml", "name: release\n");
     commit("ci: improve changelog validation");
     const result = collectCliEvidence({
-      previousTag: "v0.1.0-beta.14",
+      previousTag: "v1.0.6",
       currentTag: "v1.0.7",
       currentRef: "HEAD",
       targetVersion: "1.0.7",
@@ -789,7 +789,7 @@ test("does not treat fix-scoped CI or workflow-only changes as CLI features", ()
     write(".github/workflows/release.yml", "name: hardened release\n");
     commit("fix(ci): harden release workflow");
     const result = collectCliEvidence({
-      previousTag: "v0.1.0-beta.14",
+      previousTag: "v1.0.6",
       currentTag: "v1.0.7",
       currentRef: "HEAD",
       targetVersion: "1.0.7",
@@ -807,7 +807,7 @@ test("does not announce a feature that was fully reverted in the same range", ()
     const featureSha = commit("feat: add temporary CLI mode (#41)");
     git(["revert", "--no-edit", featureSha]);
     const result = collectCliEvidence({
-      previousTag: "v0.1.0-beta.14",
+      previousTag: "v1.0.6",
       currentTag: "v1.0.7",
       currentRef: "HEAD",
       targetVersion: "1.0.7",
@@ -1041,7 +1041,7 @@ test("prepares an automatic Draft from the trusted main push even after main adv
 
 test("records a conflicting existing tag and fails closed", () => {
   withFixture((root) => {
-    git(["tag", "v1.0.7", "v0.1.0-beta.14"]);
+    git(["tag", "v1.0.7", "v1.0.6"]);
     writeVersions("1.0.7");
     write("src/memos_cli/auth.py", "def login():\n    return 'improved'\n");
     commit("fix(auth): explain credential failures (#31)");
@@ -1543,7 +1543,7 @@ test("rejects sensitive GitHub-generated Release notes before artifacts", async 
           repo: "MemTensor/MemOS-Cloud-CLI",
           currentTag: "v2.0.0",
           targetSha: "abc1234",
-          previousTag: "v0.1.0-beta.14",
+          previousTag: "v1.0.6",
           token: "test-token",
         }),
       /GitHub generated release notes contains credential-like or internal content/,

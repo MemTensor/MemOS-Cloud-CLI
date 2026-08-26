@@ -2147,7 +2147,7 @@ async function main() {
     if (!previousTag) {
       fail(
         `cannot find a previous SemVer tag before ${currentTag}. ` +
-          "For the first automated release, create the verified v0.1.0-beta.14 baseline tag first.",
+          "For the first automated release, create the verified v1.0.6 baseline tag first.",
       );
     }
     state.previousTag = previousTag;

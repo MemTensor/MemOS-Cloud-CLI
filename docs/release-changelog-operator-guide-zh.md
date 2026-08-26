@@ -69,8 +69,8 @@ GitHub 自动生成的全部 commit 列表原样放进 Plugin tab。
 
 截至 2026-07-28 的只读审核结果：
 
-- 正式仓库 `main` 的三个版本源均为 `0.1.0-beta.14`。
-- npm 最新正式版本为 `0.1.0-beta.14`。
+- 正式仓库 `main` 的三个版本源均为 `1.0.6`。
+- npm 最新正式版本为 `1.0.6`。
 - 正式仓库还没有远程 Git Tag。
 - 正式仓库还没有 GitHub Release。
 - 本自动化没有选择或创造任何 `<next-version>`。
@@ -83,15 +83,15 @@ GitHub 自动生成的全部 commit 列表原样放进 Plugin tab。
 - CLI 负责人明确下一个版本；
 - 下一个版本的真实代码已进入目标分支；
 - 三个版本源都改成同一个 `<next-version>`；
-- `v0.1.0-beta.14` 基线 Tag 经正式仓库维护者批准并补齐。
+- `v1.0.6` 基线 Tag 经正式仓库维护者批准并补齐。
 - webhook 和 Doc Agent Actions endpoint 已配置到可访问的 106 endpoint；当前接受 HTTP。
 
 ---
 
-## 4. 一次性补齐 v0.1.0-beta.14 基线
+## 4. 一次性补齐 v1.0.6 基线
 
 经过 npm `gitHead`、提交时间、版本文件和 main 可达性联合校验，
-`v0.1.0-beta.14` 的基线提交是：
+`v1.0.6` 的基线提交是：
 
 ```text
 c18ced54beeb817f6d3f0def1d43eca66da94817
@@ -102,20 +102,20 @@ c18ced54beeb817f6d3f0def1d43eca66da94817
 
 1. 在本 PR 或单独 Issue 里贴出上面的证据。
 2. 请拥有 `MemTensor/MemOS-Cloud-CLI` 写权限的维护者评论确认：
-   `APPROVE BACKFILL v0.1.0-beta.14 c18ced54beeb817f6d3f0def1d43eca66da94817`。
+   `APPROVE BACKFILL v1.0.6 c18ced54beeb817f6d3f0def1d43eca66da94817`。
 3. 维护者从干净 checkout 执行下面命令。第一个 `git ls-remote` 必须没有输出；
-   如果已经有 `v0.1.0-beta.14`，不要覆盖、不要 force-push，先回到 PR 里确认。
+   如果已经有 `v1.0.6`，不要覆盖、不要 force-push，先回到 PR 里确认。
 
 ```bash
 git clone git@github.com:MemTensor/MemOS-Cloud-CLI.git
 cd MemOS-Cloud-CLI
 git fetch origin main
-git ls-remote --tags origin refs/tags/v0.1.0-beta.14
+git ls-remote --tags origin refs/tags/v1.0.6
 git rev-parse --verify c18ced54beeb817f6d3f0def1d43eca66da94817^{commit}
 git show --no-patch --format='%H%n%s%n%aI' c18ced54beeb817f6d3f0def1d43eca66da94817
-git tag v0.1.0-beta.14 c18ced54beeb817f6d3f0def1d43eca66da94817
-git push origin refs/tags/v0.1.0-beta.14
-git ls-remote --tags origin refs/tags/v0.1.0-beta.14
+git tag v1.0.6 c18ced54beeb817f6d3f0def1d43eca66da94817
+git push origin refs/tags/v1.0.6
+git ls-remote --tags origin refs/tags/v1.0.6
 ```
 
 原因是自动提取需要一个可信的比较
@@ -243,7 +243,7 @@ Agent 维护者确认：配置已纳入其受控版本并部署，服务重启�
 
 先确认：
 
-- `v0.1.0-beta.14` 基线 Tag 已由维护者批准并存在于 origin。
+- `v1.0.6` 基线 Tag 已由维护者批准并存在于 origin。
 - CLI 负责人已经选择 `<next-version>`。
 - `package.json`、`pyproject.toml`、`src/memos_cli/__init__.py` 的版本完全一致。
 - 目标分支/提交包含准备发布的真实代码。
@@ -500,7 +500,7 @@ workflow。不要为了复用几行步骤而重新把两者耦合。
 
 ### 14.2 dry-run 提示找不到上一个 Tag
 
-确认维护者是否已批准并补齐 `v0.1.0-beta.14` 基线。不要绕过门禁，也不要让脚本退化为
+确认维护者是否已批准并补齐 `v1.0.6` 基线。不要绕过门禁，也不要让脚本退化为
 “从仓库第一条提交开始比较”。
 
 ### 14.3 版本文件不一致
@@ -557,7 +557,7 @@ source ref。只引用 workflow、测试或发布自动化提交的条目会被�
 
 - [ ] CLI 负责人已经选择 `<next-version>`。
 - [ ] 三个版本源一致。
-- [ ] `v0.1.0-beta.14` 基线 Tag 经维护者批准并存在。
+- [ ] `v1.0.6` 基线 Tag 经维护者批准并存在。
 - [ ] 三个 repository Secret 已配置。
 - [ ] Release webhook 可用。
 - [ ] Doc Agent mapping 已持久化并部署。
