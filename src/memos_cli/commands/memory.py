@@ -201,6 +201,30 @@ def get(
         include_tool_memory=include_tool_memory,
         output_format=output_format,
         detail=detail,
+        command_name="get",
+    )
+
+
+def list(
+    user_id_arg: str | None = typer.Argument(None, help="User ID"),
+    user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
+    page: int | None = typer.Option(None, "--page", min=1, help="Page number"),
+    size: int | None = typer.Option(None, "--size", min=1, help="Page size"),
+    include_preference: str | None = typer.Option(None, "--include-preference", help="Include preference memory: true or false"),
+    include_tool_memory: str | None = typer.Option(None, "--include-tool-memory", help="Include tool memory: true or false"),
+    output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    detail: str | None = typer.Option(None, "--detail", help=DETAIL_HELP),
+):
+    """List memories for a user (alias for `get`)."""
+    cmd_get(
+        user_id=user_id_arg or user_id,
+        page=page,
+        size=size,
+        include_preference=include_preference,
+        include_tool_memory=include_tool_memory,
+        output_format=output_format,
+        detail=detail,
+        command_name="list",
     )
 
 

@@ -55,13 +55,20 @@ class MemoryAPI:
         raise APIError("Unable to reach MemOS API with the configured base URL")
 
     def add_memory(self, messages: list[dict[str, Any]], **kwargs: Any) -> dict[str, Any]:
-        """Add messages."""
+        """Add messages scoped to a user."""
+        # Reads (get_memories, chat) require user_id; writes must be scoped to the
+        # same resolver so a memory is never stored without a user scope. Otherwise a
+        # record written unscoped is silently invisible to the scoped read path.
+        user_id = kwargs.get("user_id")
+        if not user_id:
+            raise APIError("Add memory requires user_id")
+
         message_payload: dict[str, Any] = {
             "messages": messages,
+            "user_id": user_id,
         }
 
         common_fields = [
-            "user_id",
             "conversation_id",
             "agent_id",
             "app_id",
@@ -138,14 +145,17 @@ class MemoryAPI:
             "memory_limit_number": limit,
             "include_preference": kwargs.get("include_preference", True),
         }
-        # Only include non-None values
-        if kwargs.get("user_id"):
+        # Skip both None and empty strings so the read contract matches the write
+        # contract in add_memory/get_memories (both raise on falsy user_id). Sending
+        # user_id="" to /search/memory would filter by an empty scope on the server,
+        # which never matches any memory written with a real user_id.
+        if kwargs.get("user_id") not in (None, ""):
             payload["user_id"] = kwargs["user_id"]
-        if kwargs.get("conversation_id"):
+        if kwargs.get("conversation_id") is not None:
             payload["conversation_id"] = kwargs["conversation_id"]
-        if kwargs.get("agent_id"):
+        if kwargs.get("agent_id") is not None:
             payload["agent_id"] = kwargs["agent_id"]
-        if kwargs.get("app_id"):
+        if kwargs.get("app_id") is not None:
             payload["app_id"] = kwargs["app_id"]
         if kwargs.get("filter") is not None:
             payload["filter"] = kwargs["filter"]
