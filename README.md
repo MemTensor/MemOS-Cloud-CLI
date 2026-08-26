@@ -242,12 +242,25 @@ Parameters:
 
 - `[USER_ID]`: Retrieval scope; effectively required, but if omitted the CLI falls back to configured `defaults.user_id`.
 - `--user-id`: Alias of `[USER_ID]`; optional; same fallback as `[USER_ID]`.
+- `--conversation-id`: Conversation scope for retrieval; optional; defaults to configured `defaults.conversation_id`. Passing the same value used by `memos add` keeps reads consistent with writes.
 - `--page`: Page number; optional; API default is `1` when omitted.
 - `--size`: Number of items returned per memory category on the current page; optional; API default is `10` when omitted.
 - `--include-preference`: Whether to include preference memory; optional; accepts `true` or `false`; defaults to `true` when omitted.
 - `--include-tool-memory`: Whether to include tool memory; optional; accepts `true` or `false`; current CLI exposes this flag, but the official `get_memory` docs do not state the API default when omitted.
 - `--format`: Output format; optional; defaults to `agent`.
 - `--detail`: Output detail level for non-JSON formats; optional; defaults to `simple`; supported values: `simple`, `detail`.
+
+### `memos list`
+
+Alias of `memos get`; lists memories scoped to the current user and conversation.
+
+Example:
+
+```bash
+memos list user_123 --conversation-id conv_001 --format table --detail simple
+```
+
+Parameters are identical to [`memos get`](#memos-get).
 
 ### `memos delete`
 

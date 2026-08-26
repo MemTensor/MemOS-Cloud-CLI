@@ -8,7 +8,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.text import Text
 
-from memos_cli.backend.normalizers import build_skill_memory_text
+from memos_cli.backend.normalizers import build_skill_memory_text, extract_memory_list
 from memos_cli.branding import ACCENT_COLOR, BRAND_COLOR, DIM_COLOR
 
 
@@ -62,6 +62,11 @@ def extract_memory_records_from_response(data: dict[str, Any], *, detail: str = 
             items.extend(("memory", item) for item in raw_data["memories"] if isinstance(item, dict))
         if not items and any(key in raw_data for key in ("id", "memory", "text", "memory_value", "content")):
             items.append(("memory", raw_data))
+        # The official get_memory API may wrap records in a `text_mem` bucket
+        # envelope; parse it the same way `extract_memory_list` does so list/get
+        # do not silently render zero records.
+        if not items and isinstance(raw_data.get("text_mem"), list):
+            items.extend(("memory", item) for item in extract_memory_list(raw_data) if isinstance(item, dict))
     elif isinstance(data, dict) and isinstance(data.get("results"), list):
         items = [("memory", item) for item in data["results"] if isinstance(item, dict)]
 

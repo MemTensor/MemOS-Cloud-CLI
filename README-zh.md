@@ -238,12 +238,25 @@ memos get user_123 --format json --detail detail
 
 - `[USER_ID]`：用户维度；实际上必填，但若不传 CLI 会回退到配置中的 `defaults.user_id`。
 - `--user-id`：`[USER_ID]` 的兼容别名；可选；与 `[USER_ID]` 使用同样的回退规则。
+- `--conversation-id`：会话维度；可选；默认取配置中的 `defaults.conversation_id`。传入与 `memos add` 相同的值可保证读路径与写路径作用域一致。
 - `--page`：页码；可选；不传时接口默认值为 `1`。
 - `--size`：指定每一类记忆在当前页返回的条目数量；可选；不传时接口默认值为 `10`。
 - `--include-preference`：是否召回偏好记忆；可选；接受 `true` 或 `false`；不传时默认 `true`。
 - `--include-tool-memory`：是否召回工具记忆；可选；接受 `true` 或 `false`；当前 CLI 已暴露该参数，但官方 `get_memory` 文档未说明不传时的接口默认值。
 - `--format`：输出格式；可选；默认值为 `agent`。
 - `--detail`：非 JSON 输出的详略级别；可选；默认值为 `simple`；支持 `simple`、`detail`。
+
+### `memos list`
+
+`memos get` 的别名，用于列出当前用户与会话作用域下的记忆。
+
+示例：
+
+```bash
+memos list user_123 --conversation-id conv_001 --format table --detail simple
+```
+
+参数与 [`memos get`](#memos-get) 完全一致。
 
 ### `memos delete`
 

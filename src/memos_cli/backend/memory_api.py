@@ -172,6 +172,8 @@ class MemoryAPI:
             raise APIError("Get memory requires user_id")
 
         payload: dict[str, Any] = {"user_id": user_id}
+        if kwargs.get("conversation_id"):
+            payload["conversation_id"] = kwargs["conversation_id"]
         if kwargs.get("page") is not None:
             payload["page"] = kwargs["page"]
         if kwargs.get("size") is not None:

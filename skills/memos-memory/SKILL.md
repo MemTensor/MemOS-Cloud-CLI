@@ -57,7 +57,8 @@ Command examples:
 - `memos extract "<message>" --user-id <USER_ID> --format json`
 - `memos search "<query>" --user-id <USER_ID> --format agent --detail simple`
 - `memos chat "<message>" --user-id <USER_ID> --format agent`
-- `memos get <USER_ID> --format json --detail detail`
+- `memos get <USER_ID> --conversation-id <CONVERSATION_ID> --format json --detail detail`
+- `memos list <USER_ID> --conversation-id <CONVERSATION_ID> --format table --detail simple`
 - `memos origin <MEMORY_ID> --format json`
 - `memos delete <MEMORY_ID> --format json`
 - `memos delete --user-id <USER_ID> --format json`
