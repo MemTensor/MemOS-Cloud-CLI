@@ -17,6 +17,7 @@ from memos_cli.commands.config_cmd import config_app
 from memos_cli.commands.memory import add, extract, feedback, rerank, search, chat, get, delete, origin
 from memos_cli.commands.message import message, status
 from memos_cli.commands.kb import kb_app
+from memos_cli.commands.hook import hook_app
 from memos_cli.state import set_runtime_options
 console = Console()
 err_console = Console(stderr=True)
@@ -149,6 +150,7 @@ app.command(rich_help_panel="Message")(status)
 
 # Knowledge Base sub-app
 app.add_typer(kb_app, rich_help_panel="Knowledge Base")
+app.add_typer(hook_app, name="hook", hidden=True)
 
 
 

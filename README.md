@@ -22,6 +22,7 @@ MemOS-CLI/
 │   │   └── kb_api.py        # Knowledge base API
 │   └── commands/            # CLI commands
 │       ├── init.py          # memos init
+│       ├── hook.py          # internal memos hook run entrypoint
 │       ├── config_cmd.py    # memos config (show/get/set)
 │       ├── memory.py        # add/search/get/origin/delete/extract/rerank/feedback/chat
 │       ├── memory_cmd.py    # Memory command execution layer
@@ -29,6 +30,12 @@ MemOS-CLI/
 │       ├── message_cmd.py   # Message command execution layer
 │       ├── kb.py            # memos kb (create/remove/add-file/get-file/list-file/delete-file)
 │       └── kb_cmd.py        # Knowledge base command execution layer
+│   └── hooks/               # Native host hook adapters
+│       ├── agents.py        # Native hook agent registry
+│       ├── runner.py        # stdin/stdout lifecycle runner
+│       ├── codex.py         # Shared payload and transcript parsing
+│       ├── state_store.py   # Cross-process turn state
+│       └── installer.py     # Safe hook config merge/uninstall
 ├── skills/
 │   └── memos-memory/        # Memory domain skill
 │       ├── SKILL.md         # Skill entry and usage protocol
@@ -81,7 +88,7 @@ memos uninstall --agent codex --yes
 npm uninstall -g @memtensor/memos-cloud-cli
 ```
 
-Run `memos uninstall --agent <agent> --yes` before removing the npm package. It removes the installed MemOS skill and cleans the managed MemOS block from agent guidance files such as `AGENTS.md` or `CLAUDE.md`; `npm uninstall` only removes the global binary.
+Run `memos uninstall --agent <agent> --yes` before removing the npm package. For Codex it removes the native Hook, turn state, installed skill, and managed guidance block; `npm uninstall` only removes the global binary.
 
 See `skills/memos-memory/references/memos-uninstall.md` for the agent-facing uninstall workflow.
 
@@ -93,10 +100,28 @@ See `skills/memos-memory/references/memos-uninstall.md` for the agent-facing uni
 memos init --agent codex
 ```
 
-This command installs the bundled MemOS operation skill and writes the matching agent guidance.
+For supported hook agents, this command installs the complete MemOS integration: API configuration, management skill, native Hook, Hook-aware guidance, and CLI PATH setup. The Hook automatically retrieves memory before the model call and captures the completed turn after the response.
 `--agent` is required, and installation to a generic global directory is not supported.
-`--memos-plugin` defaults to `false`. Set it to `true` when the target agent already has the MemOS memory plugin installed and should prefer plugin search/add flows.
+`--memos-plugin` is a legacy option for non-hook targets and is ignored when a native Hook is available.
 It also installs shell completion automatically for the current shell when shell detection succeeds.
+
+### Native Hook
+
+The native Hook is installed and removed together with the target agent integration:
+
+```bash
+memos init --agent codex
+memos uninstall --agent codex --yes
+```
+
+The installed skill is management-only, so it does not repeat the Hook's automatic search/add lifecycle. The installer updates only MemOS-managed hook entries or plugins, preserves unrelated hooks/plugins, and is safe to run repeatedly. The API key remains in `~/.memos/config.yaml`; it is never copied into agent hook configuration, plugins, or hook state. `memos hook run --agent <agent> --event <event>` is the internal command invoked by the host. Hook failures are fail-open and do not block the host conversation.
+
+Native Hook lifecycle:
+- Codex / Claude Code: `UserPromptSubmit` → search, `Stop` → add
+- Cursor: `beforeSubmitPrompt` → search, `afterAgentResponse` → add
+- Hermes: the user plugin at `~/.hermes/plugins/memos-memory/` registers `pre_llm_call` → search and `post_llm_call` → add across CLI / TUI / Gateway / Desktop; `plugins.enabled` in `~/.hermes/config.yaml` enables it
+- OpenCode V2: `ctx.session.hook("context")` → search, `session.idle` → add
+- OpenClaw: `before_prompt_build` → search, `agent_end` → add
 
 Supported targets:
 - `--agent codex` → `~/.codex/skills/memos/`
@@ -107,7 +132,7 @@ Supported targets:
 - `--agent trae` → `~/.trae/skills/memos/`
 - `--agent trae-cn` → `~/.trae-cn/skills/memos/`
 - `--agent opencode` → `~/.config/opencode/skills/memos/`
-- `--agent antigravity` → `~/.gemini/antigravity/skills/memos/`
+- `--agent antigravity` → `~/.gemini/config/skills/`
 - `--agent workbuddy` → `~/.codebuddy/skills/memos/`
 - `--agent cline` → `~/.cline/skills/memos/`
 - `--agent copilot` → `~/.copilot/skills/memos/`
@@ -120,6 +145,8 @@ Or with arguments:
 ```bash
 memos init --api-key YOUR_API_KEY --agent codex
 ```
+
+For Codex, automatic search and add are already owned by the native Hook. The commands below are optional direct CLI operations, not additional per-turn lifecycle steps.
 
 ### 2. Add Memory
 
@@ -496,6 +523,7 @@ Get/Set specific values:
 ```bash
 memos config get platform.api_key
 memos config set defaults.user_id user123
+memos config set defaults.multi_view_enabled true
 ```
 
 ## Environment Variables
@@ -503,6 +531,7 @@ memos config set defaults.user_id user123
 - `MEMOS_API_KEY`: Your API key
 - `MEMOS_BASE_URL`: API base URL (default: https://memos.memtensor.cn/api/openmem/v1)
 - `MEMOS_FRAMEWORK`: Override framework attribution (for example `codex`)
+- `MEMOS_MULTI_VIEW_ENABLED`: Enable multi-view project scoping (`true` or `false`)
 
 ## Agent Integration
 

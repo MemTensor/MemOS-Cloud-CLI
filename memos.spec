@@ -14,6 +14,7 @@ datas = [
         "skills/memos-memory",
     ),
 ]
+qt_binding_excludes = ["PyQt5", "PyQt6", "PySide2", "PySide6"]
 
 analysis = Analysis(
     ["src/memos_cli/__main__.py"],
@@ -24,7 +25,7 @@ analysis = Analysis(
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
-    excludes=[],
+    excludes=qt_binding_excludes,
     noarchive=False,
     optimize=0,
 )

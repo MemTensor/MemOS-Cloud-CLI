@@ -1,14 +1,18 @@
 from __future__ import annotations
 
+import json
+import os
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
 import typer
+import yaml
 
 from memos_cli.config import MemOSConfig, PlatformConfig, load_config
 from memos_cli.commands import init
+from memos_cli import executable
 
 
 class GuidancePathResolutionTests(unittest.TestCase):
@@ -21,6 +25,7 @@ class GuidancePathResolutionTests(unittest.TestCase):
                 "claude": root / ".claude" / "skills",
                 "openclaw": root / ".openclaw" / "skills",
                 "hermes": root / ".hermes" / "skills",
+                "deepseek": root / ".dsh" / "skills",
             }
 
             with patch.dict(init.SUPPORTED_SKILL_AGENTS, supported, clear=True):
@@ -35,6 +40,10 @@ class GuidancePathResolutionTests(unittest.TestCase):
                 self.assertEqual(
                     init._resolve_guidance_files("hermes"),
                     [root / ".hermes" / "SOUL.md"],
+                )
+                self.assertEqual(
+                    init._resolve_guidance_files("deepseek"),
+                    [root / ".dsh" / "AGENTS.md"],
                 )
 
     def test_codex_guidance_honors_codex_home(self) -> None:
@@ -62,6 +71,26 @@ class GuidancePathResolutionTests(unittest.TestCase):
                     init._resolve_guidance_files("deepseek"),
                     [dsh_home / "AGENTS.md"],
                 )
+
+    def test_antigravity_skill_uses_flat_config_skills_directory(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config = init.AgentConfig(
+                root / ".gemini" / "config" / "skills",
+                "GEMINI.md",
+                root / ".gemini",
+                skills_namespace=None,
+            )
+            with patch.dict(init.AGENT_REGISTRY, {"antigravity": config}, clear=True):
+                with patch.dict(
+                    init.SUPPORTED_SKILL_AGENTS,
+                    {"antigravity": config.skills_dir},
+                    clear=True,
+                ):
+                    self.assertEqual(
+                        init._resolve_skill_bundle_root("antigravity"),
+                        root / ".gemini" / "config" / "skills",
+                    )
 
     def test_openclaw_guidance_updates_existing_agents_files_and_workspace_fallback(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -144,6 +173,68 @@ class GuidancePathResolutionTests(unittest.TestCase):
         self.assertNotIn("CLI guidance", content)
         self.assertIn("## MemOS Plugin Mode", content)
         self.assertIn("Plugin guidance", content)
+
+    def test_native_hook_guidance_excludes_automatic_cli_lifecycle(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template = Path(temp_dir) / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\nmust run memos search and memos add\n\n"
+                "---\n\n## MemOS Plugin Mode\n\nplugin guidance\n\n"
+                "---\n\n## MemOS Native Hook Mode\n\n"
+                "Do not run memos search automatically.\n"
+                "Do not manually store the turn.\n",
+                encoding="utf-8",
+            )
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                content = init._build_native_hook_guidance("cursor")
+
+        self.assertIn("MemOS Native Hook Mode", content)
+        self.assertNotIn("must run memos search", content)
+        self.assertNotIn("plugin guidance", content)
+
+    def test_standalone_native_hook_guidance_uses_native_hook_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            template = Path(temp_dir) / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\nmust run memos search and memos add\n\n"
+                "---\n\n## MemOS Native Hook Mode\n\n"
+                "Do not run memos search automatically.\n"
+                "Do not manually store the turn.\n",
+                encoding="utf-8",
+            )
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                content = init._build_standalone_guidance("cline", native_hook=True)
+
+        self.assertIn("alwaysApply: true", content)
+        self.assertIn("MemOS Native Hook Mode", content)
+        self.assertIn("Do not run memos search automatically", content)
+        self.assertNotIn("must run memos search", content)
+
+    def test_standalone_native_hook_install_uses_native_hook_mode(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            template = root / "agent_guidance.md"
+            template.write_text(
+                "## MemOS CLI\n\nmust run memos search and memos add\n\n"
+                "---\n\n## MemOS Native Hook Mode\n\n"
+                "Do not run memos search automatically.\n",
+                encoding="utf-8",
+            )
+            config = init.AgentConfig(
+                root / "skills",
+                "memos.md",
+                root / "rules",
+                "standalone",
+            )
+            with patch.object(init, "_guidance_template_path", return_value=template):
+                with patch.dict(init.AGENT_REGISTRY, {"cline": config}, clear=True):
+                    with patch.dict(init.SUPPORTED_SKILL_AGENTS, {"cline": root / "skills"}, clear=True):
+                        written = init._install_agent_guidance("cline", native_hook=True)
+
+            self.assertEqual(written, [root / "rules" / "memos.md"])
+            installed = written[0].read_text(encoding="utf-8")
+            self.assertIn("MemOS Native Hook Mode", installed)
+            self.assertNotIn("must run memos search", installed)
 
     def test_uninstall_guidance_removes_managed_block_only(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -238,6 +329,57 @@ class GuidancePathResolutionTests(unittest.TestCase):
                         init._resolve_memos_bin_dir(),
                         str(memos.parent),
                     )
+
+    def test_resolve_memos_executable_supports_node_launcher(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            launcher = Path(temp_dir) / "memos.js"
+            launcher.write_text("#!/usr/bin/env node\n", encoding="utf-8")
+            with patch.object(executable.sys, "argv", [str(launcher)]):
+                with patch.object(executable.shutil, "which", return_value=None):
+                    with patch.object(executable, "_npm_global_bin_dir", return_value=None):
+                        self.assertEqual(executable.resolve_memos_executable(), str(launcher.resolve()))
+
+    def test_codex_skill_install_uses_management_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "bundle" / "skills" / "memos-memory"
+            source.mkdir(parents=True)
+            references = source / "references"
+            references.mkdir()
+            (source / "SKILL.md").write_text("must run memos search and memos add\n")
+            (source / "SKILL.native-hook.md").write_text("native hook owns lifecycle\n")
+            (references / "memos-add.md").write_text("memos add\n")
+            (references / "memos-get.md").write_text("memos get\n")
+            (references / "memos-search.md").write_text("memos search\n")
+            target = root / ".codex" / "skills"
+            with patch.object(init, "_bundle_root", return_value=root / "bundle"):
+                with patch.object(init, "_resolve_skills_dir", return_value=target):
+                    installed_root = init._install_bundled_skills("codex", native_hook=True)
+
+            installed = installed_root / "memos-memory"
+            self.assertEqual((installed / "SKILL.md").read_text(), "native hook owns lifecycle\n")
+            self.assertFalse((installed / "SKILL.native-hook.md").exists())
+            self.assertFalse((installed / "references" / "memos-add.md").exists())
+            self.assertTrue((installed / "references" / "memos-get.md").exists())
+            self.assertTrue((installed / "references" / "memos-search.md").exists())
+
+    def test_deepseek_skill_install_uses_no_namespace_variant(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            source = root / "bundle" / "skills" / "memos-memory"
+            source.mkdir(parents=True)
+            (source / "SKILL.md").write_text("skill\n")
+            (source / "SKILL.native-hook.md").write_text("native hook owns lifecycle\n")
+            target = root / ".dsh" / "skills"
+            with patch.object(init, "_bundle_root", return_value=root / "bundle"):
+                with patch.object(init, "_resolve_skills_dir", return_value=target):
+                    installed_root = init._install_bundled_skills("deepseek", native_hook=True)
+
+            installed = installed_root / "memos-memory"
+            self.assertEqual(installed_root, target)
+            self.assertEqual((installed / "SKILL.md").read_text(), "native hook owns lifecycle\n")
+            self.assertFalse((installed / "SKILL.native-hook.md").exists())
+            self.assertFalse((target / "memos").exists())
 
     def test_resolve_memos_bin_dir_falls_back_to_npm_prefix(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
@@ -494,6 +636,237 @@ class GuidancePathResolutionTests(unittest.TestCase):
 
 
 class InitConfigResolutionTests(unittest.TestCase):
+    @staticmethod
+    def _complete_codex_config() -> MemOSConfig:
+        config = MemOSConfig(
+            platform=PlatformConfig(
+                api_key="existing-api-key",
+                base_url="https://example.test/api",
+            )
+        )
+        config.defaults.user_id = "existing-user"
+        config.defaults.conversation_id = "existing-conversation"
+        return config
+
+    def test_codex_init_installs_complete_native_hook_integration(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.object(init, "CONFIG_FILE", config_file):
+                with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                    with patch.object(init.sys.stdin, "isatty", return_value=False):
+                        with patch.object(init, "get_backend", return_value=Backend()):
+                            with patch.object(init, "save_config"):
+                                with patch.object(
+                                    init,
+                                    "install_hook",
+                                    return_value=root / ".codex" / "hooks.json",
+                                ) as install_hook:
+                                    with patch.object(
+                                        init,
+                                        "_install_bundled_skills",
+                                        return_value=root / "skills" / "memos",
+                                    ) as install_skills:
+                                        with patch.object(
+                                            init,
+                                            "_install_agent_guidance",
+                                            return_value=[root / "AGENTS.md"],
+                                        ) as install_guidance:
+                                            with patch.object(
+                                                init,
+                                                "_install_shell_path_entries",
+                                                return_value=[],
+                                            ):
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="codex",
+                                                )
+
+            install_hook.assert_called_once_with("codex")
+            install_skills.assert_called_once_with("codex", native_hook=True)
+            install_guidance.assert_called_once_with(
+                "codex",
+                memos_plugin=False,
+                native_hook=True,
+            )
+
+    def test_codex_init_writes_hook_skill_and_guidance_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            codex_home = root / ".codex"
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+            executable_path = root / "bin" / "memos"
+            executable_path.parent.mkdir()
+            executable_path.write_text("#!/bin/sh\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.dict("os.environ", {"CODEX_HOME": str(codex_home)}, clear=False):
+                with patch.object(init, "CONFIG_FILE", config_file):
+                    with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                        with patch.object(init.sys.stdin, "isatty", return_value=False):
+                            with patch.object(init, "get_backend", return_value=Backend()):
+                                with patch.object(init, "save_config"):
+                                    with patch.object(init, "_install_shell_path_entries", return_value=[]):
+                                        with patch(
+                                            "memos_cli.hooks.installer._resolve_memos_executable",
+                                            return_value=executable_path,
+                                        ):
+                                            init.init_cmd(
+                                                api_key=None,
+                                                user_id=None,
+                                                conversation_id=None,
+                                                memos_plugin=False,
+                                                agent="codex",
+                                            )
+
+            hooks = json.loads((codex_home / "hooks.json").read_text())
+            self.assertEqual(set(hooks["hooks"]), {"UserPromptSubmit", "Stop"})
+            skill = (codex_home / "skills" / "memos" / "memos-memory" / "SKILL.md").read_text()
+            search_reference = (codex_home / "skills" / "memos" / "memos-memory" / "references" / "memos-search.md").read_text()
+            guidance = (codex_home / "AGENTS.md").read_text()
+            self.assertIn("native agent hook is the only owner", skill)
+            self.assertIn("memos search", skill)
+            self.assertIn("gap-focused query", skill)
+            self.assertIn("do not reuse the original user prompt", skill)
+            self.assertNotIn("memos add", skill)
+            self.assertFalse((codex_home / "skills" / "memos" / "memos-memory" / "references" / "memos-add.md").exists())
+            self.assertTrue((codex_home / "skills" / "memos" / "memos-memory" / "references" / "memos-search.md").exists())
+            self.assertIn("reuse the original user prompt verbatim", search_reference)
+            self.assertNotIn("at the start of a conversation, must use", skill)
+            self.assertIn("MemOS Native Hook Mode", guidance)
+            self.assertIn("memos search", guidance)
+            self.assertIn("gap-focused query", guidance)
+            self.assertIn("do not reuse the original user prompt", guidance)
+            self.assertNotIn("memos add", guidance)
+            self.assertNotIn("must run `memos search` once", guidance)
+
+    def test_deepseek_init_writes_hook_skill_and_guidance_together(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            dsh_home = root / ".dsh"
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+            executable_path = root / "bin" / "memos"
+            executable_path.parent.mkdir()
+            executable_path.write_text("#!/bin/sh\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.dict("os.environ", {"DSH_HOME": str(dsh_home)}, clear=False):
+                with patch.object(init, "CONFIG_FILE", config_file):
+                    with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                        with patch.object(init.sys.stdin, "isatty", return_value=False):
+                            with patch.object(init, "get_backend", return_value=Backend()):
+                                with patch.object(init, "save_config"):
+                                    with patch.object(init, "_install_shell_path_entries", return_value=[]):
+                                        with patch(
+                                            "memos_cli.hooks.installer._resolve_memos_executable",
+                                            return_value=executable_path,
+                                        ):
+                                            init.init_cmd(
+                                                api_key=None,
+                                                user_id=None,
+                                                conversation_id=None,
+                                                memos_plugin=False,
+                                                agent="deepseek",
+                                            )
+
+            plugin = (dsh_home / "plugins" / "memos-memory.js").read_text()
+            self.assertIn("agent/pre-step", plugin)
+            self.assertIn("agent/turn-stopping", plugin)
+            patch_rows = yaml.safe_load((dsh_home / "cordis.patch.yml").read_text())
+            self.assertEqual(
+                patch_rows,
+                [{"insert": [{"id": "memos-memory", "name": str(dsh_home / "plugins" / "memos-memory.js")}]}],
+            )
+            self.assertFalse((dsh_home / "skills" / "memos").exists())
+            skill = (dsh_home / "skills" / "memos-memory" / "SKILL.md").read_text()
+            search_reference = (dsh_home / "skills" / "memos-memory" / "references" / "memos-search.md").read_text()
+            guidance = (dsh_home / "AGENTS.md").read_text()
+            self.assertIn("native agent hook is the only owner", skill)
+            self.assertIn("memos search", skill)
+            self.assertIn("gap-focused query", skill)
+            self.assertIn("do not reuse the original user prompt", skill)
+            self.assertNotIn("memos add", skill)
+            self.assertFalse((dsh_home / "skills" / "memos-memory" / "references" / "memos-add.md").exists())
+            self.assertTrue((dsh_home / "skills" / "memos-memory" / "references" / "memos-search.md").exists())
+            self.assertIn("reuse the original user prompt verbatim", search_reference)
+            self.assertIn("MemOS Native Hook Mode", guidance)
+            self.assertIn("memos search", guidance)
+            self.assertIn("gap-focused query", guidance)
+            self.assertIn("do not reuse the original user prompt", guidance)
+            self.assertNotIn("memos add", guidance)
+
+    def test_codex_init_does_not_switch_skill_or_guidance_when_hook_install_fails(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            config_file = root / "config.yaml"
+            config_file.write_text("existing\n")
+
+            class Backend:
+                def ping(self) -> None:
+                    return None
+
+            with patch.object(init, "CONFIG_FILE", config_file):
+                with patch.object(init, "load_config", return_value=self._complete_codex_config()):
+                    with patch.object(init.sys.stdin, "isatty", return_value=False):
+                        with patch.object(init, "get_backend", return_value=Backend()):
+                            with patch.object(init, "save_config"):
+                                with patch.object(
+                                    init,
+                                    "install_hook",
+                                    side_effect=init.HookConfigError("broken hooks config"),
+                                ):
+                                    with patch.object(init, "_install_bundled_skills") as install_skills:
+                                        with patch.object(init, "_install_agent_guidance") as install_guidance:
+                                            with self.assertRaises(typer.Exit) as raised:
+                                                init.init_cmd(
+                                                    api_key=None,
+                                                    user_id=None,
+                                                    conversation_id=None,
+                                                    memos_plugin=False,
+                                                    agent="codex",
+                                                )
+
+            self.assertEqual(raised.exception.exit_code, 1)
+            install_skills.assert_not_called()
+            install_guidance.assert_not_called()
+
+    def test_codex_uninstall_removes_native_hook_with_skill_and_guidance(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            with patch.object(init, "_resolve_skills_dir", return_value=root / "skills"):
+                with patch.object(
+                    init,
+                    "uninstall_hook",
+                    return_value=root / ".codex" / "hooks.json",
+                ) as uninstall_hook:
+                    with patch.object(init, "_remove_bundled_skills", return_value=[]):
+                        with patch.object(init, "_uninstall_agent_guidance", return_value=[]):
+                            init.uninstall_cmd(
+                                agent="codex",
+                                yes=True,
+                                remove_config=False,
+                                remove_path=False,
+                            )
+
+            uninstall_hook.assert_called_once_with("codex")
+
     def test_init_reuses_complete_existing_config_when_prompts_are_skipped(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
             config_file = Path(temp_dir) / "config.yaml"
@@ -753,6 +1126,28 @@ class InitConfigResolutionTests(unittest.TestCase):
                 config.defaults.conversation_id,
                 "existing-conversation",
             )
+
+    def test_load_config_parses_multi_view_enabled(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            config_file = Path(temp_dir) / "config.yaml"
+            config_file.write_text(
+                "defaults:\n"
+                "  multi_view_enabled: true\n"
+                "platform:\n"
+                "  base_url: https://example.test/api\n",
+                encoding="utf-8",
+            )
+
+            with patch("memos_cli.config.CONFIG_FILE", config_file):
+                config = load_config()
+
+            self.assertIs(config.defaults.multi_view_enabled, True)
+
+            with patch("memos_cli.config.CONFIG_FILE", config_file):
+                with patch.dict(os.environ, {"MEMOS_MULTI_VIEW_ENABLED": "false"}):
+                    config = load_config()
+
+            self.assertIs(config.defaults.multi_view_enabled, False)
 
 
 if __name__ == "__main__":

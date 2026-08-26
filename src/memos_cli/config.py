@@ -24,6 +24,9 @@ class DefaultsConfig(BaseModel):
     agent_id: str | None = None
     app_id: str | None = None
     run_id: str | None = None
+    multi_view_enabled: bool = False
+
+    model_config = ConfigDict(validate_assignment=True)
 
 
 class MemOSConfig(BaseModel):
@@ -43,6 +46,21 @@ def _string_or_none(value) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _bool_or_default(value, *, default: bool = False) -> bool:
+    """Normalize config booleans while tolerating legacy string values."""
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"true", "1", "yes", "on"}:
+            return True
+        if normalized in {"false", "0", "no", "off"}:
+            return False
+    return bool(value)
 
 
 def _load_file_config(data) -> MemOSConfig:
@@ -65,7 +83,10 @@ def _load_file_config(data) -> MemOSConfig:
     if isinstance(defaults_data, dict):
         for key in DefaultsConfig.model_fields:
             if key in defaults_data:
-                setattr(config.defaults, key, _string_or_none(defaults_data.get(key)))
+                if key == "multi_view_enabled":
+                    setattr(config.defaults, key, _bool_or_default(defaults_data.get(key)))
+                else:
+                    setattr(config.defaults, key, _string_or_none(defaults_data.get(key)))
 
     return config
 
@@ -100,6 +121,8 @@ def load_config() -> MemOSConfig:
         config.defaults.app_id = app_id
     if run_id := os.getenv("MEMOS_RUN_ID"):
         config.defaults.run_id = run_id
+    if multi_view_enabled := os.getenv("MEMOS_MULTI_VIEW_ENABLED"):
+        config.defaults.multi_view_enabled = _bool_or_default(multi_view_enabled)
     
     return config
 
