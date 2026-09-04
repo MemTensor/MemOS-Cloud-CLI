@@ -25,6 +25,20 @@ def add(
     message_option: str | None = typer.Option(None, "--message", "-m", help="Message content to add."),
     user_id: str | None = typer.Option(None, "--user-id", help="User ID"),
     output_format: str | None = typer.Option(None, "--format", help=FORMAT_HELP),
+    wait: bool = typer.Option(
+        True,
+        "--wait/--no-wait",
+        help=(
+            "Wait for the server-side extraction task to finish before returning "
+            "(default). Use --no-wait to return immediately with a task_id."
+        ),
+    ),
+    wait_timeout: float = typer.Option(
+        30.0,
+        "--wait-timeout",
+        min=0.0,
+        help="Maximum seconds to wait for task completion when --wait is set (default 30).",
+    ),
 ):
     """Add messages."""
     cmd_add(
@@ -41,6 +55,8 @@ def add(
         async_mode=None,
         output_format=output_format,
         detail=None,
+        wait=wait,
+        wait_timeout=wait_timeout,
     )
 
 

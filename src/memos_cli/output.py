@@ -574,8 +574,21 @@ def format_single_memory(console: Console, mem: dict, output: str = "text", *, d
     format_memories_text(console, [mem], title="memory", detail=detail)
 
 
-def format_add_result(console: Console, result: dict | list, output: str = "text") -> None:
-    """Format the result of an add operation."""
+def format_add_result(
+    console: Console,
+    result: dict | list,
+    output: str = "text",
+    *,
+    task_id: str | None = None,
+    final_status: str | None = None,
+    waited: bool = False,
+) -> None:
+    """Format the result of an add operation.
+
+    task_id / final_status / waited come from cmd_add's client-side polling.
+    When absent, the pre-existing fallback branches still fire, so consumers
+    that skip polling see no behaviour change.
+    """
     if output == "json":
         format_json(console, result)
         return
@@ -583,7 +596,36 @@ def format_add_result(console: Console, result: dict | list, output: str = "text
     if output == "quiet":
         return
 
+    normalized_status = (final_status or "").strip().lower()
     results = extract_memory_records_from_response(result, detail="simple")
+
+    if task_id:
+        console.print()
+        if normalized_status == "completed":
+            console.print(f"[green]✓[/] Memory added [dim](task_id={task_id})[/]")
+        elif normalized_status in {"success", "succeeded", "done"}:
+            console.print(f"[green]✓[/] Memory added [dim](task_id={task_id})[/]")
+        elif normalized_status in {"failed", "error"}:
+            console.print(f"[red]✗[/] Memory add failed [dim](task_id={task_id})[/]")
+        elif waited:
+            console.print(
+                f"[yellow]⚠[/] Memory add accepted but still processing; "
+                f"task_id={task_id}."
+            )
+            console.print(
+                f"  [dim]Use `memos status {task_id}` to poll, or retry `memos get` "
+                f"once processing finishes.[/]"
+            )
+        else:
+            console.print(
+                f"[green]✓[/] Memory add accepted; task_id={task_id} [dim](running)[/]."
+            )
+            console.print(
+                f"  [dim]Use `memos status {task_id}` to check progress, or "
+                f"`memos add --wait` to block until it finishes.[/]"
+            )
+        console.print()
+        return
 
     if not results:
         message = ""
@@ -761,6 +803,9 @@ def format_agent_envelope(
     count: int | None = None,
     detail: str = "simple",
     records_preformatted: bool = False,
+    task_id: str | None = None,
+    final_status: str | None = None,
+    waited: bool = False,
 ):
     """Output only the aggregated context block content for agent mode."""
     identity = {k: v for k, v in (scope or {}).items() if v}
@@ -772,6 +817,9 @@ def format_agent_envelope(
         detail=detail,
         records_preformatted=records_preformatted,
         warnings=warnings,
+        task_id=task_id,
+        final_status=final_status,
+        waited=waited,
     )
     context_block = payload_data.get("context_block")
     if context_block is None:
@@ -792,6 +840,9 @@ def _build_agent_payload(
     detail: str,
     records_preformatted: bool,
     warnings: list[str],
+    task_id: str | None = None,
+    final_status: str | None = None,
+    waited: bool = False,
 ) -> dict[str, Any]:
     """Build command-aware agent payloads with distinct simple/detail output."""
     if isinstance(data, list):
@@ -813,11 +864,19 @@ def _build_agent_payload(
         if isinstance(data, dict):
             message = str(data.get("message") or data.get("msg") or "").strip()
         return {
-            "context_block": _build_add_success_context(message=message, detail=detail),
+            "context_block": _build_add_success_context(
+                message=message,
+                detail=detail,
+                task_id=task_id,
+                final_status=final_status,
+                waited=waited,
+            ),
             "results": _extract_memory_result_records(data, detail=detail),
             "count": 1,
             "warnings": warnings,
             "message": message,
+            "task_id": task_id,
+            "final_status": final_status,
         }
 
     if command == "extract":
@@ -1070,16 +1129,42 @@ def _build_result_context(command: str, results: list[dict[str, Any]], *, detail
     return "\n".join(lines)
 
 
-def _build_add_success_context(*, message: str, detail: str) -> str:
+def _build_add_success_context(
+    *,
+    message: str,
+    detail: str,
+    task_id: str | None = None,
+    final_status: str | None = None,
+    waited: bool = False,
+) -> str:
     lines = ["<add_result>", ""]
+    normalized_status = (final_status or "").strip().lower()
+    header = "Add success."
+    if task_id:
+        if normalized_status in {"failed", "error"}:
+            header = "Add failed."
+        elif normalized_status in {"completed", "success", "succeeded", "done"}:
+            header = "Add success."
+        elif waited:
+            header = "Add accepted; still processing after wait_timeout."
+        else:
+            header = "Add accepted; running asynchronously."
     lines.extend(
         [
             "# Policy",
-            "Add success.",
+            header,
         ]
     )
     if message:
         lines.append(f"- message: {message}")
+    if task_id:
+        lines.append(f"- task_id: {task_id}")
+    if normalized_status:
+        lines.append(f"- status: {normalized_status}")
+    if task_id and normalized_status not in {"completed", "success", "succeeded", "done"}:
+        lines.append(
+            f"- hint: poll `memos status {task_id}` or retry `memos get` once processing finishes"
+        )
     if detail == "detail":
         lines.append("- output: memory added")
     lines.append("")
