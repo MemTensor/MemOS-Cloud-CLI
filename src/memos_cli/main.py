@@ -35,6 +35,7 @@ class CommandFirstTyperGroup(TyperGroup):
         "add",
         "search",
         "get",
+        "list",
         "origin",
         "delete",
         "extract",
@@ -137,6 +138,7 @@ app.command(rich_help_panel="Memory Operations")(extract)
 app.command(rich_help_panel="Memory Operations")(feedback)
 app.command(rich_help_panel="Memory Operations")(search)
 app.command(rich_help_panel="Memory Operations")(get)
+app.command(name="list", rich_help_panel="Memory Operations")(get)
 app.command(rich_help_panel="Memory Operations")(origin)
 app.command(rich_help_panel="Memory Operations")(delete)
 

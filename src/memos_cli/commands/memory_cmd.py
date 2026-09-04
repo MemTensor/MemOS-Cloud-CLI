@@ -1,6 +1,7 @@
 """Execution layer for memory commands."""
 from __future__ import annotations
 
+import logging
 import sys
 import time
 import json
@@ -27,6 +28,7 @@ from memos_cli.output import (
 )
 from memos_cli.state import apply_runtime_overrides
 
+logger = logging.getLogger(__name__)
 console = Console()
 VALID_OUTPUT_FORMATS = {"table", "markdown", "agent", "json"}
 VALID_DETAILS = {"simple", "detail"}
@@ -40,6 +42,78 @@ VALID_BOOL_STRINGS = {
     "on": True,
     "off": False,
 }
+
+_TERMINAL_SUCCESS_STATUSES = frozenset({"completed", "success", "succeeded", "done"})
+_TERMINAL_FAILURE_STATUSES = frozenset({"failed", "error"})
+_TERMINAL_TASK_STATUSES = _TERMINAL_SUCCESS_STATUSES | _TERMINAL_FAILURE_STATUSES
+_DEFAULT_POLL_INTERVAL_SECONDS = 0.5
+
+
+def _extract_task_id(result: Any) -> str | None:
+    """Return the task_id from an add-response envelope, if any."""
+    if not isinstance(result, dict):
+        return None
+    data = result.get("data")
+    if isinstance(data, dict):
+        for key in ("task_id", "taskId"):
+            value = data.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+    for key in ("task_id", "taskId"):
+        value = result.get(key)
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return None
+
+
+def _extract_status(payload: Any) -> str:
+    """Return a lowercased status string from a server envelope."""
+    if not isinstance(payload, dict):
+        return ""
+    data = payload.get("data")
+    if isinstance(data, dict):
+        raw = data.get("status")
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip().lower()
+    raw = payload.get("status")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip().lower()
+    return ""
+
+
+def _poll_task_status(
+    backend,
+    task_id: str,
+    *,
+    timeout: float,
+    poll_interval: float = _DEFAULT_POLL_INTERVAL_SECONDS,
+) -> dict[str, Any]:
+    """Poll get_status until a terminal state or timeout is reached.
+
+    Timeout is a soft ceiling — on expiry, returns the last observed payload.
+    Transport / API errors abort the loop (the add itself already succeeded);
+    the exception is logged at WARNING so a broken /get/status endpoint or a
+    latent bug in the backend client stays diagnosable instead of silently
+    returning an empty payload.
+    """
+    deadline = time.time() + max(timeout, 0.0)
+    last: dict[str, Any] = {}
+    while True:
+        if time.time() >= deadline:
+            return last
+        try:
+            observed = backend.get_status(task_id)
+        except Exception as exc:  # noqa: BLE001 - abort on any get_status failure
+            logger.warning("get_status(%s) failed, aborting poll: %s", task_id, exc)
+            return last
+        if isinstance(observed, dict):
+            last = observed
+        status = _extract_status(last)
+        if status in _TERMINAL_TASK_STATUSES:
+            return last
+        if time.time() >= deadline:
+            return last
+        time.sleep(poll_interval)
 
 
 def _load_backend():
@@ -217,6 +291,8 @@ def cmd_add(
     async_mode: bool | None,
     output_format: str,
     detail: str,
+    wait: bool = True,
+    wait_timeout: float = 30.0,
 ) -> None:
     """Execute add."""
     start_time = time.time()
@@ -253,21 +329,46 @@ def cmd_add(
     except Exception as exc:
         _handle_error(exc)
 
-    duration_ms = int((time.time() - start_time) * 1000)
+    add_duration_ms = int((time.time() - start_time) * 1000)
+
+    task_id = _extract_task_id(result)
+    initial_status = _extract_status(result)
+    final_status = initial_status
+    # A non-positive wait_timeout would make _poll_task_status skip every call
+    # (the deadline is already past on entry). Treat it as an explicit opt-out
+    # of waiting so we don't advertise waited=True while silently swallowing
+    # the poll — callers that want a poll should pass a positive timeout.
+    effective_wait = wait and wait_timeout > 0
+    if task_id and effective_wait and initial_status not in _TERMINAL_TASK_STATUSES:
+        polled = _poll_task_status(backend, task_id, timeout=wait_timeout)
+        polled_status = _extract_status(polled)
+        if polled_status:
+            final_status = polled_status
+
     if final_output == "agent":
         format_agent_envelope(
             console,
             command="add",
             data=result,
-            duration_ms=duration_ms,
+            duration_ms=add_duration_ms,
             scope={**scope, "conversation_id": final_conversation_id},
             detail=final_detail,
+            task_id=task_id,
+            final_status=final_status,
+            waited=effective_wait,
         )
         return
     if final_output == "json":
         format_json(console, result)
         return
-    format_add_result(console, result, output="text")
+    format_add_result(
+        console,
+        result,
+        output="text",
+        task_id=task_id,
+        final_status=final_status,
+        waited=effective_wait,
+    )
 
 
 def cmd_extract(
