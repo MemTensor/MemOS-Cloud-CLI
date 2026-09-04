@@ -1,6 +1,7 @@
 """Execution layer for memory commands."""
 from __future__ import annotations
 
+import logging
 import sys
 import time
 import json
@@ -27,6 +28,7 @@ from memos_cli.output import (
 )
 from memos_cli.state import apply_runtime_overrides
 
+logger = logging.getLogger(__name__)
 console = Console()
 VALID_OUTPUT_FORMATS = {"table", "markdown", "agent", "json"}
 VALID_DETAILS = {"simple", "detail"}
@@ -89,7 +91,10 @@ def _poll_task_status(
     """Poll get_status until a terminal state or timeout is reached.
 
     Timeout is a soft ceiling — on expiry, returns the last observed payload.
-    Transport / API errors abort the loop (the add itself already succeeded).
+    Transport / API errors abort the loop (the add itself already succeeded);
+    the exception is logged at WARNING so a broken /get/status endpoint or a
+    latent bug in the backend client stays diagnosable instead of silently
+    returning an empty payload.
     """
     deadline = time.time() + max(timeout, 0.0)
     last: dict[str, Any] = {}
@@ -98,7 +103,8 @@ def _poll_task_status(
             return last
         try:
             observed = backend.get_status(task_id)
-        except Exception:
+        except Exception as exc:  # noqa: BLE001 - abort on any get_status failure
+            logger.warning("get_status(%s) failed, aborting poll: %s", task_id, exc)
             return last
         if isinstance(observed, dict):
             last = observed
@@ -328,7 +334,12 @@ def cmd_add(
     task_id = _extract_task_id(result)
     initial_status = _extract_status(result)
     final_status = initial_status
-    if task_id and wait and initial_status not in _TERMINAL_TASK_STATUSES:
+    # A non-positive wait_timeout would make _poll_task_status skip every call
+    # (the deadline is already past on entry). Treat it as an explicit opt-out
+    # of waiting so we don't advertise waited=True while silently swallowing
+    # the poll — callers that want a poll should pass a positive timeout.
+    effective_wait = wait and wait_timeout > 0
+    if task_id and effective_wait and initial_status not in _TERMINAL_TASK_STATUSES:
         polled = _poll_task_status(backend, task_id, timeout=wait_timeout)
         polled_status = _extract_status(polled)
         if polled_status:
@@ -344,7 +355,7 @@ def cmd_add(
             detail=final_detail,
             task_id=task_id,
             final_status=final_status,
-            waited=wait,
+            waited=effective_wait,
         )
         return
     if final_output == "json":
@@ -356,7 +367,7 @@ def cmd_add(
         output="text",
         task_id=task_id,
         final_status=final_status,
-        waited=wait,
+        waited=effective_wait,
     )
 
 

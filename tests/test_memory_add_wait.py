@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import unittest
 from unittest.mock import patch
 
@@ -19,6 +20,7 @@ from memos_cli.config import MemOSConfig, PlatformConfig
 from memos_cli.main import app
 from memos_cli.output import (
     _build_add_success_context,
+    _build_agent_payload,
     format_add_result,
 )
 
@@ -169,6 +171,27 @@ class PollTaskStatusTests(unittest.TestCase):
         # First call returns "running", second call raises — loop exits with the last observed payload.
         self.assertEqual(_extract_status(result), "running")
         self.assertEqual(len(backend.status_calls), 2)
+
+    def test_poll_logs_transport_error_at_warning(self) -> None:
+        backend = FakeBackend(
+            add_response={},
+            status_sequence=[],
+            status_error_after=0,
+        )
+        with patch.object(memory_cmd.time, "sleep"):
+            with self.assertLogs(memory_cmd.logger, level=logging.WARNING) as caplog:
+                result = _poll_task_status(
+                    backend, "task-x", timeout=5.0, poll_interval=0.0
+                )
+        # Even with no successful observation the loop returns cleanly, but
+        # the underlying failure is surfaced through the logger so a broken
+        # /get/status endpoint (or a programming error in the backend client)
+        # stays diagnosable instead of turning into a silent empty payload.
+        self.assertEqual(result, {})
+        self.assertTrue(
+            any("get_status(task-x) failed" in message for message in caplog.output),
+            caplog.output,
+        )
 
 
 class CmdAddPollingTests(unittest.TestCase):
@@ -328,6 +351,48 @@ class CmdAddPollingTests(unittest.TestCase):
 
         self.assertEqual(backend.status_calls, [])
         self.assertEqual(captured["final_status"], "completed")
+
+    def test_cmd_add_wait_true_but_zero_timeout_is_treated_as_no_wait(self) -> None:
+        """wait=True + wait_timeout=0 previously produced zero polls yet reported waited=True.
+
+        Guard the poll invocation so a non-positive timeout is treated as an explicit opt-out
+        of waiting: no /get/status calls, and the envelope reports waited=False so downstream
+        consumers can distinguish 'fire and forget' from 'waited to completion'.
+        """
+        backend = FakeBackend(
+            add_response={
+                "code": 0,
+                "data": {"task_id": "task-42", "status": "running"},
+            },
+        )
+        captured: dict = {}
+
+        def fake_format(_console, **kwargs):
+            captured.update(kwargs)
+
+        with patch.object(memory_cmd, "_load_backend", return_value=(self._config(), backend)):
+            with patch.object(memory_cmd, "format_agent_envelope", side_effect=fake_format):
+                memory_cmd.cmd_add(
+                    message_text="hello",
+                    message_option=None,
+                    user_id=None,
+                    agent_id=None,
+                    app_id=None,
+                    conversation_id=None,
+                    tags_json=None,
+                    info_json=None,
+                    allow_public=None,
+                    allow_knowledgebase_ids=None,
+                    async_mode=None,
+                    output_format="agent",
+                    detail="simple",
+                    wait=True,
+                    wait_timeout=0.0,
+                )
+
+        self.assertEqual(backend.status_calls, [])
+        self.assertEqual(captured["final_status"], "running")
+        self.assertFalse(captured["waited"])
 
 
 class AddTyperEntrypointTests(unittest.TestCase):
@@ -496,10 +561,87 @@ class AddSuccessContextTests(unittest.TestCase):
         )
         self.assertIn("Add failed", block)
 
+    def test_context_failed_does_not_recommend_polling(self) -> None:
+        """A terminal-failure status should not suggest polling the (dead) task."""
+        block = _build_add_success_context(
+            message="",
+            detail="simple",
+            task_id="task-1",
+            final_status="failed",
+            waited=True,
+        )
+        self.assertNotIn("hint", block)
+        self.assertNotIn("memos status task-1", block)
+
+    def test_context_error_does_not_recommend_polling(self) -> None:
+        block = _build_add_success_context(
+            message="",
+            detail="simple",
+            task_id="task-1",
+            final_status="error",
+            waited=True,
+        )
+        self.assertNotIn("hint", block)
+
     def test_context_backwards_compatible_no_task_id(self) -> None:
         block = _build_add_success_context(message="Memory added", detail="simple")
         self.assertIn("Add success", block)
         self.assertNotIn("task_id", block)
+
+
+class FormatAddResultBranchTests(unittest.TestCase):
+    """Cover the merged success branch in format_add_result."""
+
+    def test_success_status_variants_all_print_success_line(self) -> None:
+        for status in ("completed", "success", "succeeded", "done"):
+            with self.subTest(status=status):
+                console, buffer = _make_console()
+                format_add_result(
+                    console,
+                    {"data": {"task_id": "task-42", "status": status}},
+                    output="text",
+                    task_id="task-42",
+                    final_status=status,
+                    waited=True,
+                )
+                out = buffer.getvalue()
+                self.assertIn("✓", out)
+                self.assertIn("Memory added", out)
+                self.assertIn("task-42", out)
+
+
+class AgentEnvelopeAddPayloadTests(unittest.TestCase):
+    """`_build_agent_payload("add", ...)` must round-trip `waited` in its
+    returned dict so downstream consumers can distinguish "waited to
+    completion" from "fired and forgotten" — symmetrical with task_id and
+    final_status which are already serialised."""
+
+    def _add_payload(self, *, waited: bool) -> dict:
+        return _build_agent_payload(
+            command="add",
+            data={
+                "code": 0,
+                "message": "ok",
+                "data": {"task_id": "task-1", "status": "completed"},
+            },
+            identity={"user_id": "u"},
+            detail="simple",
+            records_preformatted=False,
+            warnings=[],
+            task_id="task-1",
+            final_status="completed",
+            waited=waited,
+        )
+
+    def test_waited_true_is_serialised(self) -> None:
+        payload = self._add_payload(waited=True)
+        self.assertIn("waited", payload)
+        self.assertTrue(payload["waited"])
+
+    def test_waited_false_is_serialised(self) -> None:
+        payload = self._add_payload(waited=False)
+        self.assertIn("waited", payload)
+        self.assertFalse(payload["waited"])
 
 
 if __name__ == "__main__":

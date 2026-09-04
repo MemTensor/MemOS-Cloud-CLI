@@ -601,9 +601,7 @@ def format_add_result(
 
     if task_id:
         console.print()
-        if normalized_status == "completed":
-            console.print(f"[green]✓[/] Memory added [dim](task_id={task_id})[/]")
-        elif normalized_status in {"success", "succeeded", "done"}:
+        if normalized_status in {"completed", "success", "succeeded", "done"}:
             console.print(f"[green]✓[/] Memory added [dim](task_id={task_id})[/]")
         elif normalized_status in {"failed", "error"}:
             console.print(f"[red]✗[/] Memory add failed [dim](task_id={task_id})[/]")
@@ -877,6 +875,7 @@ def _build_agent_payload(
             "message": message,
             "task_id": task_id,
             "final_status": final_status,
+            "waited": waited,
         }
 
     if command == "extract":
@@ -1161,7 +1160,7 @@ def _build_add_success_context(
         lines.append(f"- task_id: {task_id}")
     if normalized_status:
         lines.append(f"- status: {normalized_status}")
-    if task_id and normalized_status not in {"completed", "success", "succeeded", "done"}:
+    if task_id and normalized_status not in {"completed", "success", "succeeded", "done", "failed", "error"}:
         lines.append(
             f"- hint: poll `memos status {task_id}` or retry `memos get` once processing finishes"
         )
