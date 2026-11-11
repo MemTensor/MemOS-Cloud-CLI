@@ -129,7 +129,7 @@ memos uninstall --agent codex --yes
 - `--agent trae-cn` → `~/.trae-cn/skills/memos/`
 - `--agent opencode` → `~/.config/opencode/skills/memos/`
 - `--agent antigravity` → `~/.gemini/config/skills/`
-- `--agent workbuddy` → `~/.codebuddy/skills/memos/`
+- `--agent workbuddy` → `~/.workbuddy/skills/memos/`
 - `--agent cline` → `~/.cline/skills/memos/`
 - `--agent copilot` → `~/.copilot/skills/memos/`
 - `--agent deepseek` → `~/.dsh/skills/memos-memory/`（或 `$DSH_HOME/skills/memos-memory/`）

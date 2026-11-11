@@ -25,6 +25,7 @@ class GuidancePathResolutionTests(unittest.TestCase):
                 "claude": root / ".claude" / "skills",
                 "openclaw": root / ".openclaw" / "skills",
                 "hermes": root / ".hermes" / "skills",
+                "workbuddy": root / ".workbuddy" / "skills",
                 "deepseek": root / ".dsh" / "skills",
             }
 
@@ -42,8 +43,27 @@ class GuidancePathResolutionTests(unittest.TestCase):
                     [root / ".hermes" / "SOUL.md"],
                 )
                 self.assertEqual(
+                    init._resolve_guidance_files("workbuddy"),
+                    [root / ".workbuddy" / "CODEBUDDY.md"],
+                )
+                self.assertEqual(
                     init._resolve_guidance_files("deepseek"),
                     [root / ".dsh" / "AGENTS.md"],
+                )
+
+    def test_workbuddy_skill_bundle_uses_workbuddy_home(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            skills_dir = root / ".workbuddy" / "skills"
+
+            with patch.dict(
+                init.SUPPORTED_SKILL_AGENTS,
+                {"workbuddy": skills_dir},
+                clear=True,
+            ):
+                self.assertEqual(
+                    init._resolve_skill_bundle_root("workbuddy"),
+                    skills_dir / "memos",
                 )
 
     def test_codex_guidance_honors_codex_home(self) -> None:

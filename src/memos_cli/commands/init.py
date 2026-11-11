@@ -73,7 +73,7 @@ AGENT_REGISTRY: dict[str, AgentConfig] = {
         Path.home() / ".gemini",
         skills_namespace=None,
     ),
-    "workbuddy":   AgentConfig(Path.home() / ".codebuddy" / "skills",                "CODEBUDDY.md"),
+    "workbuddy":   AgentConfig(Path.home() / ".workbuddy" / "skills",                "CODEBUDDY.md"),
     "cline":       AgentConfig(Path.home() / ".cline" / "skills",                    "memos.md", 
                                Path.home() / ".cline" / "rules", "standalone"),
     "copilot":     AgentConfig(Path.home() / ".copilot" / "skills",                  "copilot-instructions.md"),
