@@ -1664,12 +1664,26 @@ const promptMessage = {{
   content: [{{ type: "text", text: "user question" }}],
   source: {{ kind: "user" }},
 }}
+const injectedContext = {{
+  id: "context-1",
+  role: "user",
+  content: [{{ type: "text", text: "previous retrieved context" }}],
+  source: {{ kind: "plugin", plugin: "memos-memory" }},
+}}
 const decision = await listeners["agent/pre-step"](
-  {{ agent, messages: [promptMessage], turn: 7, step: 1, signal: {{}} }},
+  {{ agent, messages: [promptMessage, injectedContext], turn: 7, step: 1, signal: {{}} }},
   async () => ({{ kind: "enter", messages: [promptMessage] }}),
 )
+const secondDecision = await listeners["agent/pre-step"](
+  {{ agent, messages: decision.messages, turn: 7, step: 2, signal: {{}} }},
+  async () => ({{ kind: "enter", messages: decision.messages }}),
+)
+const duplicateDecision = await listeners["agent/pre-step"](
+  {{ agent, messages: decision.messages, turn: 7, step: 1, signal: {{}} }},
+  async () => ({{ kind: "enter", messages: decision.messages }}),
+)
 await listeners["agent/turn-stopping"]({{ agent, turn: 7, signal: {{}} }})
-console.log(JSON.stringify({{ decision }}))
+console.log(JSON.stringify({{ decision, secondDecision, duplicateDecision }}))
 ''',
         encoding="utf-8",
     )
@@ -1687,8 +1701,11 @@ console.log(JSON.stringify({{ decision }}))
     assert result["decision"]["messages"][-1]["content"] == [
         {"type": "text", "text": "retrieved memory"}
     ]
+    assert result["secondDecision"]["messages"] == result["decision"]["messages"]
+    assert result["duplicateDecision"]["messages"] == result["decision"]["messages"]
     calls = [json.loads(line) for line in log_path.read_text(encoding="utf-8").splitlines()]
     assert [call["event"] for call in calls] == ["agent/pre-step", "agent/turn-stopping"]
+    assert calls[0]["payload"]["prompt"] == "user question"
     assert calls[1]["payload"] == {
         "session_id": "session-1",
         "turn_id": "7",
