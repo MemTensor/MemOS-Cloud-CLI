@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -39,10 +40,43 @@ ANTIGRAVITY_ADAPTER_FILENAME = "memos-antigravity-hook-adapter.py"
 ANTIGRAVITY_ADAPTER_MARKER = "antigravity payload adapter"
 
 
+_HOOK_AGENT_RE = re.compile(
+    r"""(?ix)
+    (?:^|[\\/'"\s])
+    memos(?:\.exe|\.js)?
+    (?:["'])?
+    \s+hook\s+run\b
+    (?:.*?\s)?
+    --agent(?:\s+|=)
+    ([^\s"']+)
+    """
+)
+
+
+def _token_basename(token: str) -> str:
+    return Path(token.strip().strip("'\"")).name.lower()
+
+
 def _hook_command_agent(command: str) -> str | None:
+    if not command:
+        return None
     try:
         parts = shlex.split(command)
     except ValueError:
+        parts = []
+    # Match the adapter by basename only. A directory component that happens
+    # to contain the filename must not mark an unrelated command as managed.
+    names = {_token_basename(token) for token in (*parts, *command.split())}
+    if ANTIGRAVITY_ADAPTER_FILENAME in names:
+        return "antigravity"
+    match = _HOOK_AGENT_RE.search(command)
+    if match:
+        return match.group(1).strip().lower()
+
+    # POSIX-quoted commands remain parseable with shlex; Windows cmd quoting
+    # and unquoted drive paths are handled by the regex above because
+    # shlex.split() treats backslashes as escape characters.
+    if not parts:
         return None
 
     for index, part in enumerate(parts):
@@ -303,40 +337,55 @@ def _normalize_event_name(event: str) -> str:
     return event.strip().lower()
 
 
-def _resolve_command_prefix() -> str:
+def _format_hook_command(parts: list[str]) -> str:
+    """Join argv for the host shell that will spawn the hook."""
+    if os.name == "nt":
+        # Cursor and other Windows hosts run hooks.json commands through cmd.exe.
+        # shlex.quote() emits POSIX single quotes, which cmd treats as literals
+        # and then rejects for paths such as C:\\Program Files\\...\\memos.exe.
+        return subprocess.list2cmdline(parts)
+    return " ".join(shlex.quote(part) for part in parts)
+
+
+def _resolve_executable_argv() -> list[str]:
     resolved = _resolve_memos_executable()
     if resolved is None:
         raise HookConfigError("Unable to resolve the installed memos executable")
     executable = Path(resolved)
-    command_prefix = shlex.quote(str(executable))
+    argv = [str(executable)]
     if executable.suffix.lower() == ".js" and not os.access(executable, os.X_OK):
         node = shutil.which("node")
         if node:
-            command_prefix = f"{shlex.quote(str(Path(node).resolve()))} {command_prefix}"
-    return command_prefix
+            argv.insert(0, str(Path(node).resolve()))
+    return argv
+
+
+def _resolve_command_prefix() -> str:
+    return _format_hook_command(_resolve_executable_argv())
 
 
 def resolve_command(agent: str = DEFAULT_HOOK_AGENT, event: str | None = None) -> str:
     """Return the native hook command for a target agent and optional event."""
     spec = get_hook_agent_spec(agent)
-    command = f"{_resolve_command_prefix()} hook run --agent {shlex.quote(spec.agent)}"
+    parts = [*_resolve_executable_argv(), "hook", "run", "--agent", spec.agent]
     if event:
-        command = f"{command} --event {shlex.quote(event)}"
-    return command
+        parts.extend(["--event", event])
+    return _format_hook_command(parts)
 
 
 def _portable_command(agent: str = DEFAULT_HOOK_AGENT, event: str | None = None) -> str:
     """Return a PATH-based hook command for configs that must run off-machine."""
     spec = get_hook_agent_spec(agent)
-    command = f"memos hook run --agent {shlex.quote(spec.agent)}"
+    parts = ["memos", "hook", "run", "--agent", spec.agent]
     if event:
-        command = f"{command} --event {shlex.quote(event)}"
-    return command
+        parts.extend(["--event", event])
+    return _format_hook_command(parts)
 
 
 def _resolve_command_argv(agent: str) -> list[str]:
     """Return the hook command as argv for generated JS wrappers."""
-    return shlex.split(resolve_command(agent))
+    spec = get_hook_agent_spec(agent)
+    return [*_resolve_executable_argv(), "hook", "run", "--agent", spec.agent]
 
 
 def _antigravity_adapter_path(spec: HookAgentSpec) -> Path:

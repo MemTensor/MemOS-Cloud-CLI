@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from typing import Any, Callable
 
@@ -139,8 +140,8 @@ def run_payload(
         )
         try:
             store.save(state)
-        except Exception:
-            _diagnose("could not persist turn state; continuing")
+        except Exception as exc:
+            _diagnose(f"could not persist turn state ({type(exc).__name__}): {exc}; continuing")
 
         if not spec.search_injection_enabled:
             return _allow_response(spec)
@@ -230,8 +231,8 @@ def run_payload(
                     # extraction; successful add still consumes it once.
                     try:
                         store.save(state)
-                    except Exception:
-                        _diagnose("could not restore pending turn state")
+                    except Exception as exc:
+                        _diagnose(f"could not restore pending turn state ({type(exc).__name__}): {exc}")
         except Exception as exc:
             _diagnose(f"could not process turn state ({type(exc).__name__}): {exc}; continuing")
         return _stop_response(spec)
@@ -239,9 +240,27 @@ def run_payload(
     return {}
 
 
+def _read_hook_stdin() -> str:
+    """Read hook JSON as UTF-8, even when Windows stdio is still the ANSI code page."""
+    buffer = getattr(sys.stdin, "buffer", None)
+    if buffer is not None:
+        raw = buffer.read()
+        if not raw:
+            return ""
+        if raw.startswith(b"\xef\xbb\xbf"):
+            raw = raw[3:]
+        try:
+            return raw.decode("utf-8")
+        except UnicodeDecodeError:
+            if os.name == "nt":
+                return raw.decode("mbcs")
+            raise
+    return sys.stdin.read()
+
+
 def run_stdin(agent: str = DEFAULT_HOOK_AGENT, event: str | None = None) -> dict[str, Any]:
     try:
-        raw = sys.stdin.read()
+        raw = _read_hook_stdin()
         payload = json.loads(raw)
         if not isinstance(payload, dict):
             raise ValueError("payload is not an object")

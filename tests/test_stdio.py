@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import unittest
+from unittest.mock import patch
 
-from memos_cli.stdio import _configure_stream
+from memos_cli.stdio import _configure_stream, configure_windows_stdio
 
 
 class FakeStream:
@@ -38,6 +39,35 @@ class StdioCompatibilityTests(unittest.TestCase):
 
     def test_missing_stream_is_ignored(self) -> None:
         _configure_stream(None)
+
+    def test_configure_windows_stdio_reconfigures_redirected_stdin(self) -> None:
+        stdin = FakeStream(is_terminal=False)
+        stdout = FakeStream(is_terminal=False)
+        stderr = FakeStream(is_terminal=False)
+
+        with (
+            patch("memos_cli.stdio.os.name", "nt"),
+            patch("memos_cli.stdio.sys.stdin", stdin),
+            patch("memos_cli.stdio.sys.stdout", stdout),
+            patch("memos_cli.stdio.sys.stderr", stderr),
+        ):
+            configure_windows_stdio()
+
+        expected = [{"errors": "backslashreplace", "encoding": "utf-8"}]
+        self.assertEqual(stdin.calls, expected)
+        self.assertEqual(stdout.calls, expected)
+        self.assertEqual(stderr.calls, expected)
+
+    def test_configure_windows_stdio_is_noop_off_windows(self) -> None:
+        stdin = FakeStream(is_terminal=False)
+
+        with (
+            patch("memos_cli.stdio.os.name", "posix"),
+            patch("memos_cli.stdio.sys.stdin", stdin),
+        ):
+            configure_windows_stdio()
+
+        self.assertEqual(stdin.calls, [])
 
 
 if __name__ == "__main__":

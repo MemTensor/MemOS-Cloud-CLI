@@ -123,20 +123,29 @@ class HookStateStore:
     def save(self, state: HookTurnState) -> Path:
         self._ensure_root()
         destination = self.path_for(state.session_key, state.host_turn_id)
+        payload = json.dumps(asdict(state), ensure_ascii=False, sort_keys=True) + "\n"
+        encoded = payload.encode("utf-8")
         fd, temporary_name = tempfile.mkstemp(prefix=".turn-", suffix=".tmp", dir=self.root)
+        replaced = False
         try:
-            with os.fdopen(fd, "w", encoding="utf-8") as handle:
-                json.dump(asdict(state), handle, ensure_ascii=False, sort_keys=True)
-                handle.write("\n")
+            # Write UTF-8 bytes directly. Frozen Windows builds can ignore
+            # encoding="utf-8" on text wrappers and then raise while dumping CJK.
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(encoded)
                 handle.flush()
                 os.fsync(handle.fileno())
-            os.chmod(temporary_name, 0o600)
-            os.replace(temporary_name, destination)
-        finally:
             try:
-                os.unlink(temporary_name)
-            except FileNotFoundError:
+                os.chmod(temporary_name, 0o600)
+            except OSError:
                 pass
+            os.replace(temporary_name, destination)
+            replaced = True
+        finally:
+            if not replaced:
+                try:
+                    os.unlink(temporary_name)
+                except FileNotFoundError:
+                    pass
         return destination
 
     def load(self, session_key: str, host_turn_id: str | None = None) -> HookTurnState | None:
