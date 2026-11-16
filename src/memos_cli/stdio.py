@@ -35,9 +35,10 @@ def _configure_stream(stream: Any) -> None:
 
 
 def configure_windows_stdio() -> None:
-    """Configure Windows stdout/stderr before Rich or Click creates consoles."""
+    """Configure Windows stdin/stdout/stderr before Rich or Click creates consoles."""
     if os.name != "nt":
         return
 
+    _configure_stream(sys.stdin)
     _configure_stream(sys.stdout)
     _configure_stream(sys.stderr)

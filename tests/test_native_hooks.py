@@ -15,7 +15,13 @@ from unittest.mock import patch
 import pytest
 import yaml
 
-from memos_cli.hooks.installer import HookConfigError, install_hook, is_managed_hook, uninstall_hook
+from memos_cli.hooks.installer import (
+    HookConfigError,
+    install_hook,
+    is_managed_hook,
+    resolve_command,
+    uninstall_hook,
+)
 from memos_cli.hooks.agents import get_hook_agent_spec, is_native_hook_agent
 from memos_cli.hooks.runner import run_payload, run_stdin
 from memos_cli.hooks.state_store import HookStateStore, HookTurnState
@@ -615,8 +621,9 @@ def test_state_is_private_hashed_atomic_and_ttl_cleaned(tmp_path):
     state = HookTurnState.create(session_key="a/b", conversation_id="codex:a/b", prompt="p", now=now)
     path = store.save(state)
     assert path.name == HookStateStore.key_digest("a/b") + ".json"
-    assert path.stat().st_mode & 0o777 == 0o600
-    assert path.parent.stat().st_mode & 0o777 == 0o700
+    if os.name != "nt":
+        assert path.stat().st_mode & 0o777 == 0o600
+        assert path.parent.stat().st_mode & 0o777 == 0o700
     old = HookTurnState.create(session_key="old", conversation_id="codex:old", prompt="p", now=now - timedelta(seconds=11))
     old_path = store.save(old)
     unrelated = path.parent / "keep.json"
@@ -2062,3 +2069,134 @@ def test_runner_stdin_malformed_json_is_json_on_stdout(monkeypatch, capsys):
     captured = capsys.readouterr()
     assert json.loads(captured.out) == {}
     assert "invalid hook payload" in captured.err
+
+
+def test_hook_state_save_roundtrips_cjk_as_utf8_bytes(tmp_path, monkeypatch):
+    real_fdopen = os.fdopen
+
+    def latin1_text_fdopen(fd, mode="r", *args, **kwargs):
+        if "b" not in str(mode):
+            kwargs["encoding"] = "latin-1"
+        return real_fdopen(fd, mode, *args, **kwargs)
+
+    monkeypatch.setattr(os, "fdopen", latin1_text_fdopen)
+    store = HookStateStore(tmp_path / "state", agent="cursor")
+    state = HookTurnState.create(
+        session_key="s1",
+        conversation_id="cursor:s1",
+        prompt="你好世界",
+        agent="cursor",
+        host_turn_id="g1",
+    )
+
+    path = store.save(state)
+    raw = path.read_bytes()
+
+    assert "你好世界".encode("utf-8") in raw
+    loaded = store.load("s1", "g1")
+    assert loaded is not None
+    assert loaded.prompt == "你好世界"
+
+
+def test_cursor_persist_failure_logs_exception_type(tmp_path, capsys):
+    store = HookStateStore(tmp_path / "state")
+
+    def boom(_state):
+        raise OSError("simulated freeze")
+
+    store.save = boom
+    result = run_payload(
+        {
+            "conversation_id": "s1",
+            "generation_id": "g1",
+            "prompt": "hello",
+            "hook_event_name": "beforeSubmitPrompt",
+        },
+        agent="cursor",
+        fallback_event="beforeSubmitPrompt",
+        config_loader=config,
+        backend_factory=lambda _: FakeBackend(),
+        store=store,
+    )
+
+    captured = capsys.readouterr()
+    assert result == {"continue": True}
+    assert "could not persist turn state (OSError): simulated freeze" in captured.err
+
+
+def test_runner_stdin_prefers_utf8_buffer_over_text_codepage(monkeypatch, capsys, tmp_path):
+    payload = {
+        "conversation_id": "s1",
+        "generation_id": "g1",
+        "prompt": "你好",
+        "hook_event_name": "beforeSubmitPrompt",
+    }
+    raw = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    store_root = tmp_path / "state"
+
+    class FakeStdin:
+        def __init__(self) -> None:
+            self.buffer = io.BytesIO(raw)
+
+        def read(self) -> str:
+            return raw.decode("latin-1")
+
+    monkeypatch.setattr(sys, "stdin", FakeStdin())
+    monkeypatch.setattr(
+        "memos_cli.hooks.runner.HookStateStore",
+        lambda agent="codex", **kwargs: HookStateStore(store_root, agent=agent),
+    )
+
+    run_stdin(agent="cursor", event="beforeSubmitPrompt")
+
+    captured = capsys.readouterr()
+    assert json.loads(captured.out) == {"continue": True}
+    store = HookStateStore(store_root, agent="cursor")
+    state = store.load("s1", "g1")
+    assert state is not None
+    assert state.prompt == "你好"
+
+
+def test_windows_hook_command_uses_cmd_quoting(tmp_path, monkeypatch):
+    executable = tmp_path / "Program Files" / "memos.exe"
+    executable.parent.mkdir()
+    executable.write_text("")
+    monkeypatch.setattr("memos_cli.hooks.installer.os.name", "nt")
+    monkeypatch.setattr(
+        "memos_cli.hooks.installer._resolve_memos_executable",
+        lambda: executable,
+    )
+
+    command = resolve_command("cursor", "beforeSubmitPrompt")
+    prefix, _, rest = command.partition(" hook run ")
+
+    assert prefix == f'"{executable}"'
+    assert "'" not in prefix
+    assert rest == "--agent cursor --event beforeSubmitPrompt"
+    assert is_managed_hook({"command": command}, "cursor")
+
+
+def test_hook_command_agent_parses_windows_cmd_paths():
+    from memos_cli.hooks.installer import _hook_command_agent
+
+    quoted = r'"C:\Program Files\memos.exe" hook run --agent cursor --event beforeSubmitPrompt'
+    unquoted = r"C:\Users\example\AppData\Roaming\npm\memos.exe hook run --agent cursor"
+    posix = "/usr/bin/memos hook run --agent cursor --event beforeSubmitPrompt"
+    posix_quoted = "'/usr/local/my memos/memos' hook run --agent cursor --event beforeSubmitPrompt"
+
+    assert _hook_command_agent(quoted) == "cursor"
+    assert _hook_command_agent(unquoted) == "cursor"
+    assert _hook_command_agent(posix) == "cursor"
+    assert _hook_command_agent(posix_quoted) == "cursor"
+
+
+def test_hook_command_agent_matches_adapter_basename_only():
+    from memos_cli.hooks.installer import _hook_command_agent
+
+    decoy = "/home/user/memos-antigravity-hook-adapter.py.bak/run.py --event Stop"
+    windows_decoy = r"C:\hooks\memos-antigravity-hook-adapter.py\wrapper.exe --event Stop"
+    real = "/home/user/.gemini/config/memos-antigravity-hook-adapter.py --event Stop"
+
+    assert _hook_command_agent(decoy) is None
+    assert _hook_command_agent(windows_decoy) is None
+    assert _hook_command_agent(real) == "antigravity"
